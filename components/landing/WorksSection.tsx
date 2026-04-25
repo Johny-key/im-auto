@@ -1,63 +1,164 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { useState, useEffect, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import SectionTitle from "../ui/SectionTitle";
 
 const works = [
   {
+    brand: "Mercedes-Benz",
+    model: "GLE 450 Coupe AMG",
+    year: 2022,
+    mileage: "17 483 км",
+    price: "7 480 000 ₽",
+    country: "Китай",
+    category: "Премиум",
+    specs: "3.0T · 367 л.с. · 4MATIC · 9AT · Бензин",
+    photos: [
+      "/works/mercedes-gle450/1.jpg",
+      "/works/mercedes-gle450/2.jpg",
+      "/works/mercedes-gle450/3.jpg",
+      "/works/mercedes-gle450/4.jpg",
+    ],
+  },
+  {
+    brand: "Lixiang",
+    model: "L9 Ultra 1.5 Hybrid",
+    year: 2024,
+    mileage: "45 188 км",
+    price: "5 920 000 ₽",
+    country: "Китай",
+    category: "Бизнес",
+    specs: "1.5T · 449 л.с. · AWD · Автомат · Гибрид",
+    photos: [
+      "/works/lixiang-l9/1.jpg",
+      "/works/lixiang-l9/2.jpg",
+      "/works/lixiang-l9/3.jpg",
+      "/works/lixiang-l9/4.jpg",
+    ],
+  },
+  {
+    brand: "Kia",
+    model: "K5 2.0AT Noblesse",
+    year: 2022,
+    mileage: "35 783 км",
+    price: "2 710 000 ₽",
+    country: "Корея",
+    category: "Комфорт",
+    specs: "2.0 · 160 л.с. · FWD · 6AT · Бензин",
+    photos: [
+      "/works/kia-k5/1.jpg",
+      "/works/kia-k5/2.jpg",
+      "/works/kia-k5/3.jpg",
+      "/works/kia-k5/4.jpg",
+    ],
+  },
+  {
+    brand: "BMW",
+    model: "X4 xDrive20i M Sport",
+    year: 2022,
+    mileage: "34 759 км",
+    price: "5 710 000 ₽",
+    country: "Корея",
+    category: "Бизнес",
+    specs: "2.0T · 184 л.с. · AWD · Автомат · Бензин",
+    photos: [
+      "/works/bmw-x4/1.jpg",
+      "/works/bmw-x4/2.jpg",
+      "/works/bmw-x4/3.jpg",
+      "/works/bmw-x4/4.jpg",
+    ],
+  },
+  {
     brand: "Genesis",
     model: "GV80 3.5T AWD",
     year: 2023,
+    mileage: "28 000 км",
     price: "5 850 000 ₽",
     country: "Корея",
-    category: "Премиум",
-    photo: "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=600&q=80&auto=format&fit=crop",
+    category: "Бизнес",
+    specs: "3.5T · 375 л.с. · AWD · Автомат · Бензин",
+    photos: [
+      "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=900&q=80&auto=format&fit=crop",
+    ],
   },
   {
     brand: "Hyundai",
-    model: "Tucson 1.6 T-GDi",
-    year: 2023,
-    price: "2 390 000 ₽",
+    model: "Tucson 1.6 Turbo Inspiration 2WD",
+    year: 2021,
+    mileage: "66 081 км",
+    price: "2 650 000 ₽",
     country: "Корея",
     category: "Комфорт",
-    photo: "https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?w=600&q=80&auto=format&fit=crop",
+    specs: "1.6T · 160 л.с. · 2WD · Автомат · Бензин · Максимальная комплектация",
+    photos: [
+      "/works/hyundai-tucson-2021/1.jpg",
+      "/works/hyundai-tucson-2021/2.jpg",
+      "/works/hyundai-tucson-2021/3.jpg",
+      "/works/hyundai-tucson-2021/4.jpg",
+    ],
   },
   {
     brand: "Kia",
     model: "Sportage GT Line",
     year: 2024,
+    mileage: "5 000 км",
     price: "2 750 000 ₽",
     country: "Корея",
     category: "Комфорт",
-    photo: "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=600&q=80&auto=format&fit=crop",
+    specs: "2.0 · 150 л.с. · AWD · Автомат · Бензин",
+    photos: [
+      "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=900&q=80&auto=format&fit=crop",
+    ],
   },
   {
     brand: "Toyota",
     model: "Land Cruiser 300",
     year: 2022,
+    mileage: "42 000 км",
     price: "8 200 000 ₽",
     country: "Япония",
     category: "Премиум",
-    photo: "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=600&q=80&auto=format&fit=crop",
+    specs: "3.5T · 415 л.с. · 4WD · Автомат · Бензин",
+    photos: [
+      "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=900&q=80&auto=format&fit=crop",
+    ],
   },
   {
     brand: "Hyundai",
     model: "Elantra 2.0 AT",
     year: 2023,
+    mileage: "11 000 км",
     price: "1 380 000 ₽",
     country: "Корея",
     category: "Эконом",
-    photo: "https://images.unsplash.com/photo-1609521263047-f8f205293f24?w=600&q=80&auto=format&fit=crop",
+    specs: "2.0 · 150 л.с. · FWD · Автомат · Бензин",
+    photos: [
+      "https://images.unsplash.com/photo-1609521263047-f8f205293f24?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=900&q=80&auto=format&fit=crop",
+    ],
   },
   {
     brand: "Genesis",
     model: "G80 2.5T AWD",
     year: 2023,
+    mileage: "19 000 км",
     price: "4 650 000 ₽",
     country: "Корея",
     category: "Бизнес",
-    photo: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600&q=80&auto=format&fit=crop",
+    specs: "2.5T · 304 л.с. · AWD · Автомат · Бензин",
+    photos: [
+      "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=900&q=80&auto=format&fit=crop",
+      "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=900&q=80&auto=format&fit=crop",
+    ],
   },
 ];
 
@@ -68,7 +169,165 @@ const categoryColors: Record<string, string> = {
   "Премиум": "#D4AF37",
 };
 
+type Work = typeof works[number];
+
+function CarouselModal({ work, onClose }: { work: Work; onClose: () => void }) {
+  const [index, setIndex] = useState(0);
+  const [direction, setDirection] = useState(0);
+  const total = work.photos.length;
+
+  const go = useCallback((dir: number) => {
+    setDirection(dir);
+    setIndex((prev) => (prev + dir + total) % total);
+  }, [total]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [go, onClose]);
+
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
+  const accentColor = categoryColors[work.category] ?? "#D4AF37";
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" />
+
+      <motion.div
+        className="relative z-10 w-full max-w-3xl bg-[#0F1629] border border-[rgba(212,175,55,0.15)] overflow-hidden"
+        initial={{ scale: 0.93, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.93, opacity: 0 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close */}
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 z-20 p-1.5 bg-black/50 text-[#8892A4] hover:text-white transition-colors"
+        >
+          <X size={18} />
+        </button>
+
+        {/* Photo area */}
+        <div className="relative w-full h-[420px] overflow-hidden bg-black">
+          <AnimatePresence initial={false} custom={direction}>
+            <motion.div
+              key={index}
+              custom={direction}
+              variants={{
+                enter: (d: number) => ({ x: d > 0 ? "100%" : "-100%", opacity: 0 }),
+                center: { x: 0, opacity: 1 },
+                exit: (d: number) => ({ x: d > 0 ? "-100%" : "100%", opacity: 0 }),
+              }}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+              className="absolute inset-0"
+            >
+              <Image
+                src={work.photos[index]}
+                alt={`${work.brand} ${work.model} — фото ${index + 1}`}
+                fill
+                className="object-cover"
+                sizes="768px"
+              />
+            </motion.div>
+          </AnimatePresence>
+
+          <div className="absolute inset-0 pointer-events-none" style={{
+            background: "linear-gradient(to bottom, rgba(10,15,30,0.15) 0%, rgba(15,22,41,0.6) 100%)",
+          }} />
+
+          {total > 1 && (
+            <>
+              <button
+                onClick={() => go(-1)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 p-2 bg-black/50 text-white hover:bg-[#D4AF37]/30 hover:text-[#D4AF37] transition-colors"
+              >
+                <ChevronLeft size={22} />
+              </button>
+              <button
+                onClick={() => go(1)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-black/50 text-white hover:bg-[#D4AF37]/30 hover:text-[#D4AF37] transition-colors"
+              >
+                <ChevronRight size={22} />
+              </button>
+            </>
+          )}
+
+          {total > 1 && (
+            <div className="absolute bottom-3 right-3 text-[11px] text-white/70 bg-black/50 px-2.5 py-1 tracking-wider font-display">
+              {index + 1} / {total}
+            </div>
+          )}
+
+          {total > 1 && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+              {work.photos.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => { setDirection(i > index ? 1 : -1); setIndex(i); }}
+                  className="w-1.5 h-1.5 rounded-full transition-all duration-200"
+                  style={{ background: i === index ? accentColor : "rgba(255,255,255,0.3)" }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Info */}
+        <div className="p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <div className="font-display text-xl text-[#F0EDE8] tracking-wide">
+                {work.brand}{" "}
+                <span className="text-[#8892A4] text-base">{work.model}</span>
+              </div>
+              <div className="text-[#8892A4] text-xs mt-0.5 tracking-wider">
+                {work.year} год · {work.country} · {work.mileage}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-[#8892A4] text-[11px] uppercase tracking-wider mb-0.5">Итоговая цена</div>
+              <div className="font-bold text-lg shimmer-text">{work.price}</div>
+            </div>
+          </div>
+
+          {/* Specs */}
+          <div
+            className="text-[12px] text-[#8892A4] tracking-wide px-3 py-2"
+            style={{ background: "rgba(212,175,55,0.04)", borderLeft: `2px solid ${accentColor}40` }}
+          >
+            {work.specs}
+          </div>
+        </div>
+
+        <div className="h-[2px]" style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }} />
+      </motion.div>
+    </motion.div>
+  );
+}
+
 export default function WorksSection() {
+  const [selected, setSelected] = useState<Work | null>(null);
+
   return (
     <section id="works" className="py-28 bg-[#0A0F1E] relative overflow-hidden">
       <div className="max-w-6xl mx-auto px-6">
@@ -85,25 +344,24 @@ export default function WorksSection() {
             return (
               <motion.div
                 key={i}
-                className="group relative bg-[#0F1629] border border-[rgba(212,175,55,0.08)] overflow-hidden neon-border"
+                className="group relative bg-[#0F1629] border border-[rgba(212,175,55,0.08)] overflow-hidden neon-border cursor-pointer"
                 initial={{ opacity: 0, scale: 0.96 }}
                 whileInView={{ opacity: 1, scale: 1 }}
                 viewport={{ once: true }}
                 transition={{ delay: i * 0.08 }}
                 whileHover={{ y: -5 }}
+                onClick={() => setSelected(car)}
               >
                 {/* Photo */}
                 <div className="relative w-full h-48 overflow-hidden">
                   <Image
-                    src={car.photo}
+                    src={car.photos[0]}
                     alt={`${car.brand} ${car.model}`}
                     fill
-                    className="object-cover transition-transform duration-700 group-hover:scale-108"
-                    style={{ transitionDuration: "700ms" }}
+                    className="object-cover transition-transform duration-700 group-hover:scale-105"
                     sizes="(max-width: 768px) 100vw, 33vw"
                   />
 
-                  {/* Gradient overlay */}
                   <div
                     className="absolute inset-0"
                     style={{
@@ -111,7 +369,6 @@ export default function WorksSection() {
                     }}
                   />
 
-                  {/* Racing stripe on photo hover */}
                   <div
                     className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500"
                     style={{
@@ -119,12 +376,16 @@ export default function WorksSection() {
                     }}
                   />
 
-                  {/* Country badge */}
+                  {car.photos.length > 1 && (
+                    <div className="absolute bottom-3 right-3 flex items-center gap-1 text-[10px] text-white/70 bg-black/50 px-2 py-0.5 tracking-wider font-display">
+                      ⬡ {car.photos.length} фото
+                    </div>
+                  )}
+
                   <div className="absolute top-3 left-3 text-[11px] text-[#8892A4] border border-[#8892A4]/20 px-2.5 py-1 bg-[#0A0F1E]/70 backdrop-blur-sm font-display tracking-wider">
                     {car.country}
                   </div>
 
-                  {/* Category badge */}
                   <div
                     className="absolute top-3 right-3 text-[11px] px-2.5 py-1 font-display tracking-wider backdrop-blur-sm"
                     style={{
@@ -139,22 +400,21 @@ export default function WorksSection() {
 
                 {/* Info */}
                 <div className="p-5">
-                  <div className="flex items-start justify-between mb-2">
-                    <div>
-                      <div className="font-display text-xl text-[#F0EDE8] tracking-wide">
-                        {car.brand}{" "}
-                        <span className="text-[#8892A4] text-base">{car.model}</span>
-                      </div>
-                      <div className="text-[#8892A4] text-xs mt-0.5 tracking-wider">{car.year} год</div>
-                    </div>
+                  <div className="font-display text-xl text-[#F0EDE8] tracking-wide mb-0.5">
+                    {car.brand}{" "}
+                    <span className="text-[#8892A4] text-base">{car.model}</span>
+                  </div>
+                  <div className="text-[#8892A4] text-xs tracking-wider mb-3">
+                    {car.year} год · {car.mileage}
                   </div>
 
-                  {/* Divider */}
+                  <div className="text-[11px] text-[#8892A4]/80 tracking-wide mb-3 truncate">
+                    {car.specs}
+                  </div>
+
                   <div
-                    className="h-px my-3 transition-all duration-300"
-                    style={{
-                      background: `linear-gradient(90deg, ${accentColor}30, transparent)`,
-                    }}
+                    className="h-px mb-3"
+                    style={{ background: `linear-gradient(90deg, ${accentColor}30, transparent)` }}
                   />
 
                   <div className="flex items-center justify-between">
@@ -163,7 +423,6 @@ export default function WorksSection() {
                   </div>
                 </div>
 
-                {/* Bottom accent line — colored by category */}
                 <div
                   className="absolute bottom-0 left-0 right-0 h-[2px] opacity-0 group-hover:opacity-100 transition-opacity duration-300"
                   style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
@@ -187,6 +446,12 @@ export default function WorksSection() {
           </a>
         </motion.div>
       </div>
+
+      <AnimatePresence>
+        {selected && (
+          <CarouselModal work={selected} onClose={() => setSelected(null)} />
+        )}
+      </AnimatePresence>
     </section>
   );
 }
