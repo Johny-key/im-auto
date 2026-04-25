@@ -1,26 +1,253 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&display=swap');
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-gold: #D4AF37;
+  --color-gold-light: #F0D060;
+  --color-gold-dark: #A88A1A;
+  --color-bg-primary: #0A0F1E;
+  --color-bg-secondary: #0D1426;
+  --color-bg-card: #0F1629;
+  --color-bg-card-hover: #141D35;
+  --color-text-primary: #F0EDE8;
+  --color-text-muted: #8892A4;
+  --color-border-gold: rgba(212, 175, 55, 0.2);
+
+  --font-display: 'Montserrat', sans-serif;
+  --font-body: 'Montserrat', sans-serif;
+
+  --text-display-xl: 9rem;
+  --text-display-lg: 6rem;
+  --text-display-md: 4rem;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
   }
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #0A0F1E;
+  color: #F0EDE8;
+  font-family: 'Montserrat', sans-serif;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #0A0F1E;
+}
+::-webkit-scrollbar-thumb {
+  background: #A88A1A;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D4AF37;
+}
+
+.font-display {
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+/* ── Legacy utilities kept for compatibility ── */
+.gold-gradient {
+  background: linear-gradient(135deg, #D4AF37, #F0D060, #D4AF37);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gold-line {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #D4AF37, transparent);
+}
+
+.card-glow {
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.1), 0 4px 24px rgba(0, 0, 0, 0.4);
+  transition: box-shadow 0.3s ease;
+}
+.card-glow:hover {
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.4), 0 8px 40px rgba(212, 175, 55, 0.08);
+}
+
+/* ════════════════════════════════════════
+   KEYFRAMES
+════════════════════════════════════════ */
+
+/* Shimmer sweep across gradient text */
+@keyframes shimmer-flow {
+  0%   { background-position: -250% center; }
+  100% { background-position: 250% center; }
+}
+
+/* Legacy shimmer (kept for any existing usage) */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Float bob */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-12px); }
+}
+
+/* Gold pulse */
+@keyframes pulse-gold {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 1; }
+}
+
+/* Horizontal speed streak across screen */
+@keyframes speed-line-move {
+  0%   { transform: translateX(-110%) skewX(-18deg); opacity: 0; }
+  8%   { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translateX(120vw) skewX(-18deg); opacity: 0; }
+}
+
+/* Glow breathe for neon elements */
+@keyframes glow-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 6px rgba(212,175,55,0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 18px rgba(212,175,55,0.75)) drop-shadow(0 0 36px rgba(212,175,55,0.25));
+  }
+}
+
+/* Marquee horizontal scroll */
+@keyframes marquee-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* BMW headlight blinks — left then right, double-flash pattern */
+@keyframes blink-left {
+  0%,   1%  { opacity: 0; }
+  3%,   9%  { opacity: 1; }
+  11%,  15% { opacity: 0; }
+  17%,  23% { opacity: 1; }
+  25%, 100% { opacity: 0; }
+}
+@keyframes blink-right {
+  0%,  29%  { opacity: 0; }
+  31%, 37%  { opacity: 1; }
+  39%, 43%  { opacity: 0; }
+  45%, 51%  { opacity: 1; }
+  53%, 100% { opacity: 0; }
+}
+
+/* Diagonal stripe drift */
+@keyframes stripe-drift {
+  0%   { background-position: 0 0; }
+  100% { background-position: 120px 0; }
+}
+
+/* ════════════════════════════════════════
+   UTILITY CLASSES
+════════════════════════════════════════ */
+
+/* ── Shimmer gold text ── */
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    #8A6E10 0%,
+    #C49A20 12%,
+    #D4AF37 22%,
+    #F5E070 35%,
+    #FFFACD 50%,
+    #F5E070 65%,
+    #D4AF37 78%,
+    #C49A20 88%,
+    #8A6E10 100%
+  );
+  background-size: 250% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: shimmer-flow 2.8s linear infinite;
+}
+
+/* ── Speed line streak ── */
+.speed-line {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(212,175,55,0.08) 10%,
+    rgba(212,175,55,0.55) 40%,
+    rgba(255,255,220,0.25) 50%,
+    rgba(212,175,55,0.55) 60%,
+    rgba(212,175,55,0.08) 90%,
+    transparent 100%
+  );
+  animation-name: speed-line-move;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* ── Diagonal racing stripe background ── */
+.racing-stripe-bg {
+  background-image: repeating-linear-gradient(
+    -62deg,
+    transparent,
+    transparent 22px,
+    rgba(212,175,55,0.022) 22px,
+    rgba(212,175,55,0.022) 23px
+  );
+}
+
+/* Animated version (subtle drift) */
+.racing-stripe-animated {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 12px,
+    rgba(212,175,55,0.04) 12px,
+    rgba(212,175,55,0.04) 24px
+  );
+  background-size: 200px 200px;
+  animation: stripe-drift 6s linear infinite;
+}
+
+/* ── Neon border glow ── */
+.neon-border {
+  box-shadow:
+    0 0 0 1px rgba(212,175,55,0.25),
+    0 0 12px rgba(212,175,55,0.08),
+    inset 0 0 12px rgba(212,175,55,0.04);
+  transition: box-shadow 0.3s ease;
+}
+.neon-border:hover {
+  box-shadow:
+    0 0 0 1px rgba(212,175,55,0.55),
+    0 0 24px rgba(212,175,55,0.18),
+    0 0 48px rgba(212,175,55,0.06),
+    inset 0 0 24px rgba(212,175,55,0.06);
+}
+
+/* ── Glow breathe on element ── */
+.animate-glow {
+  animation: glow-breathe 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-pulse-gold {
+  animation: pulse-gold 3s ease-in-out infinite;
 }
