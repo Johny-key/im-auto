@@ -64,10 +64,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid_data" }, { status: 400 });
   }
 
-  await Promise.allSettled([
+  const [tgResult, sheetResult] = await Promise.allSettled([
     sendTelegram(name, phone, email, message),
     appendSheet(name, phone, email, message),
   ]);
+
+  if (tgResult.status === "rejected") console.error("Telegram error:", tgResult.reason);
+  if (sheetResult.status === "rejected") console.error("Sheets error:", sheetResult.reason);
 
   return NextResponse.json({ ok: true });
 }
