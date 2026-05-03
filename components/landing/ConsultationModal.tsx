@@ -10,15 +10,66 @@ interface Props {
   onClose: () => void;
 }
 
+function formatPhone(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.startsWith("8")) digits = "7" + digits.slice(1);
+  if (digits.startsWith("7")) digits = digits.slice(0, 11);
+  else digits = ("7" + digits).slice(0, 11);
+
+  let out = "+7";
+  if (digits.length > 1) out += ` (${digits.slice(1, 4)}`;
+  if (digits.length >= 4) out += ")";
+  if (digits.length > 4) out += ` ${digits.slice(4, 7)}`;
+  if (digits.length > 7) out += `-${digits.slice(7, 9)}`;
+  if (digits.length > 9) out += `-${digits.slice(9, 11)}`;
+  return out;
+}
+
+function isValidPhone(phone: string): boolean {
+  return phone.replace(/\D/g, "").length === 11;
+}
+
 export default function ConsultationModal({ open, onClose }: Props) {
   const [form, setForm] = useState({ name: "", phone: "" });
+  const [phoneTouched, setPhoneTouched] = useState(false);
+  const [phoneHasInvalid, setPhoneHasInvalid] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const phoneError = phoneHasInvalid
+    ? "Только цифры — буквы недопустимы"
+    : phoneTouched && !isValidPhone(form.phone)
+    ? "Введите корректный номер телефона"
+    : null;
+
+  const handlePhoneKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const passthrough = ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Tab", "Home", "End", "Enter"];
+    if (passthrough.includes(e.key) || e.ctrlKey || e.metaKey) return;
+    if (!/^\d$/.test(e.key)) e.preventDefault();
+  };
+
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    const hasInvalid = /[^\d\s+()\-]/.test(raw);
+    setPhoneHasInvalid(hasInvalid);
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length === 0) {
+      setForm({ ...form, phone: "" });
+      return;
+    }
+    setForm({ ...form, phone: formatPhone(digits) });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setPhoneTouched(true);
+    if (phoneHasInvalid || !isValidPhone(form.phone)) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
+    await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
     setLoading(false);
     setSubmitted(true);
   };
@@ -27,6 +78,8 @@ export default function ConsultationModal({ open, onClose }: Props) {
     onClose();
     setTimeout(() => {
       setSubmitted(false);
+      setPhoneTouched(false);
+      setPhoneHasInvalid(false);
       setForm({ name: "", phone: "" });
     }, 300);
   };
@@ -95,13 +148,22 @@ export default function ConsultationModal({ open, onClose }: Props) {
                       Номер телефона *
                     </label>
                     <input
-                      required
                       type="tel"
+                      inputMode="numeric"
                       value={form.phone}
-                      onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                      onKeyDown={handlePhoneKeyDown}
+                      onChange={handlePhoneChange}
+                      onBlur={() => setPhoneTouched(true)}
                       placeholder="+7 (999) 000-00-00"
-                      className="w-full bg-[#0A0F1E] border border-[rgba(212,175,55,0.15)] text-[#F0EDE8] px-4 py-3 text-sm placeholder:text-[#8892A4]/50 focus:outline-none focus:border-[#D4AF37]/50 transition-colors"
+                      className={`w-full bg-[#0A0F1E] border text-[#F0EDE8] px-4 py-3 text-sm placeholder:text-[#8892A4]/50 focus:outline-none transition-colors ${
+                        phoneError
+                          ? "border-red-500/70 focus:border-red-500"
+                          : "border-[rgba(212,175,55,0.15)] focus:border-[#D4AF37]/50"
+                      }`}
                     />
+                    {phoneError && (
+                      <p className="text-red-400 text-xs mt-1">{phoneError}</p>
+                    )}
                   </div>
                   <Button
                     type="submit"
