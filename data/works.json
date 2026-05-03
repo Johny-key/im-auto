@@ -1,0 +1,66 @@
+[
+  {
+    "brand": "Lixiang",
+    "model": "L9 Ultra 1.5 Hybrid",
+    "year": 2024,
+    "mileage": "45 188 км",
+    "price": "5 920 000 ₽",
+    "country": "Китай",
+    "category": "Бизнес",
+    "specs": "1.5T · 449 л.с. · AWD · Автомат · Гибрид",
+    "photos": [
+      "/works/lixiang-l9/1.jpg",
+      "/works/lixiang-l9/2.jpg",
+      "/works/lixiang-l9/3.jpg",
+      "/works/lixiang-l9/4.jpg"
+    ]
+  },
+  {
+    "brand": "Kia",
+    "model": "K5 2.0AT Noblesse",
+    "year": 2022,
+    "mileage": "35 783 км",
+    "price": "2 710 000 ₽",
+    "country": "Корея",
+    "category": "Комфорт",
+    "specs": "2.0 · 160 л.с. · FWD · 6AT · Бензин",
+    "photos": [
+      "/works/kia-k5/1.jpg",
+      "/works/kia-k5/2.jpg",
+      "/works/kia-k5/3.jpg",
+      "/works/kia-k5/4.jpg"
+    ]
+  },
+  {
+    "brand": "BMW",
+    "model": "X4 xDrive20i M Sport",
+    "year": 2022,
+    "mileage": "34 759 км",
+    "price": "5 710 000 ₽",
+    "country": "Корея",
+    "category": "Бизнес",
+    "specs": "2.0T · 184 л.с. · AWD · Автомат · Бензин",
+    "photos": [
+      "/works/bmw-x4/1.jpg",
+      "/works/bmw-x4/2.jpg",
+      "/works/bmw-x4/3.jpg",
+      "/works/bmw-x4/4.jpg"
+    ]
+  },
+  {
+    "brand": "Hyundai",
+    "model": "Tucson 1.6 Turbo Inspiration 2WD",
+    "year": 2021,
+    "mileage": "66 081 км",
+    "price": "2 650 000 ₽",
+    "country": "Корея",
+    "category": "Комфорт",
+    "specs": "1.6T · 160 л.с. · 2WD · Автомат · Бензин · Максимальная комплектация",
+    "photos": [
+      "/works/hyundai-tucson-2021/1.jpg",
+      "/works/hyundai-tucson-2021/2.jpg",
+      "/works/hyundai-tucson-2021/3.jpg",
+      "/works/hyundai-tucson-2021/4.jpg"
+    ]
+  }
+]
