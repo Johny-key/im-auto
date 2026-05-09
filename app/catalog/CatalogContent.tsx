@@ -130,11 +130,12 @@ export default function CatalogContent() {
   const [priceSort, setPriceSort] = useState<"asc" | "desc" | "">("");
   const [modalOpen, setModalOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [cars, setCars] = useState<Car[]>([]);
+  const [allCars, setAllCars] = useState<Car[]>([]);
+  const [visibleCount, setVisibleCount] = useState(30);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [bgLoading, setBgLoading] = useState(false);
+  const [bgTotal, setBgTotal] = useState(0);
   const [error, setError] = useState(false);
-  const [totalCars, setTotalCars] = useState(0);
   const [wonRate, setWonRate] = useState(650);
   const [eurRate, setEurRate] = useState(95);
   const [cities, setCities] = useState<City[]>([]);
@@ -142,29 +143,46 @@ export default function CatalogContent() {
 
   const PAGE_SIZE = 200;
 
-  const loadMore = () => {
-    setLoadingMore(true);
-    fetch(`/api/catalog/cars?limit=${PAGE_SIZE}&offset=${cars.length}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.items) setCars((prev) => [...prev, ...data.items.map(mapCar)]);
-      })
-      .catch(() => {})
-      .finally(() => setLoadingMore(false));
-  };
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAll = async () => {
+      try {
+        const first = await fetch(`/api/catalog/cars?limit=${PAGE_SIZE}&offset=0`).then(r => r.json());
+        if (cancelled) return;
+        if (!first.items) { setError(true); return; }
+
+        const total: number = first.total ?? 0;
+        const initial = first.items.map(mapCar);
+        setAllCars(initial);
+        setBgTotal(total);
+        setLoading(false);
+
+        if (initial.length >= total) return;
+
+        setBgLoading(true);
+        let offset = PAGE_SIZE;
+        while (offset < total) {
+          if (cancelled) return;
+          const page = await fetch(`/api/catalog/cars?limit=${PAGE_SIZE}&offset=${offset}`).then(r => r.json()).catch(() => null);
+          if (cancelled) return;
+          if (page?.items) {
+            setAllCars(prev => [...prev, ...page.items.map(mapCar)]);
+          }
+          offset += PAGE_SIZE;
+        }
+        setBgLoading(false);
+      } catch {
+        if (!cancelled) { setError(true); setLoading(false); }
+      }
+    };
+
+    loadAll();
+
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
-    fetch(`/api/catalog/cars?limit=${PAGE_SIZE}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.items) {
-          setCars(data.items.map(mapCar));
-          setTotalCars(data.total ?? 0);
-        } else setError(true);
-      })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
-
     fetch("/api/admin/rate")
       .then((r) => r.json())
       .then((d) => {
@@ -185,7 +203,7 @@ export default function CatalogContent() {
   }, []);
 
   const filtered = useMemo(() => {
-    let list = cars.filter(isCalculable);
+    let list = allCars.filter(isCalculable);
     if (selectedBrand) list = list.filter(car => car.brand === selectedBrand);
     if (yearFrom !== "") list = list.filter(car => car.year >= (yearFrom as number));
     if (yearTo !== "") list = list.filter(car => car.year <= (yearTo as number));
@@ -207,18 +225,24 @@ export default function CatalogContent() {
       });
     }
     return list;
-  }, [cars, activeCategory, selectedBrand, yearFrom, yearTo, priceSort, wonRate, eurRate, fees]);
+  }, [allCars, activeCategory, selectedBrand, yearFrom, yearTo, priceSort, wonRate, eurRate, fees]);
+
+  // Reset visible count when filters change
+  useEffect(() => { setVisibleCount(30); }, [activeCategory, selectedBrand, yearFrom, yearTo, priceSort]);
+
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = visibleCount < filtered.length;
 
   const brands = useMemo(() => {
-    const calculable = cars.filter(isCalculable);
+    const calculable = allCars.filter(isCalculable);
     return Array.from(new Set(calculable.map(c => c.brand))).sort((a, b) => a.localeCompare(b, "ru"));
-  }, [cars]);
+  }, [allCars]);
 
   const availableYears = useMemo(() => {
-    const calculable = cars.filter(isCalculable);
+    const calculable = allCars.filter(isCalculable);
     const years = Array.from(new Set(calculable.map(c => c.year).filter(y => y > 2000))).sort((a, b) => b - a);
     return years;
-  }, [cars]);
+  }, [allCars]);
 
   const hasActiveFilters = activeCategory !== "all" || selectedBrand !== "" || yearFrom !== "" || yearTo !== "" || priceSort !== "";
 
@@ -252,10 +276,18 @@ export default function CatalogContent() {
               </h1>
             </div>
             {!loading && !error && (
-              <p className="text-[#8892A4] text-sm max-w-xs leading-relaxed">
-                {filtered.length}{" "}
-                {filtered.length === 1 ? "автомобиль" : filtered.length < 5 ? "автомобиля" : "автомобилей"} в наличии
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-[#8892A4] text-sm max-w-xs leading-relaxed">
+                  {filtered.length}{" "}
+                  {filtered.length === 1 ? "автомобиль" : filtered.length < 5 ? "автомобиля" : "автомобилей"} в наличии
+                </p>
+                {bgLoading && (
+                  <span className="flex items-center gap-1.5 text-[#8892A4]/60 text-xs">
+                    <span className="w-3 h-3 border border-[#D4AF37]/30 border-t-[#D4AF37]/70 rounded-full animate-spin" />
+                    загружаем {allCars.length} / {bgTotal}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -449,7 +481,7 @@ export default function CatalogContent() {
                   transition={{ duration: 0.2 }}
                   className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
                 >
-                  {filtered.map((car, i) => (
+                  {visible.map((car, i) => (
                     <CarCard key={car.id} car={car} index={i} wonRate={wonRate} eurRate={eurRate} cities={cities} fees={fees} onConsult={() => setModalOpen(true)} />
                   ))}
                 </motion.div>
@@ -457,22 +489,14 @@ export default function CatalogContent() {
             </AnimatePresence>
           )}
 
-          {/* Load more */}
-          {!loading && !error && cars.length < totalCars && (
+          {/* Show more */}
+          {!loading && !error && hasMore && (
             <div className="flex justify-center mt-10">
               <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="flex items-center gap-2 border border-[#D4AF37]/40 text-[#D4AF37] px-8 py-3 text-sm font-display uppercase tracking-widest hover:bg-[#D4AF37]/10 transition-all duration-200 disabled:opacity-50"
+                onClick={() => setVisibleCount(c => c + 30)}
+                className="flex items-center gap-2 border border-[#D4AF37]/40 text-[#D4AF37] px-8 py-3 text-sm font-display uppercase tracking-widest hover:bg-[#D4AF37]/10 transition-all duration-200"
               >
-                {loadingMore ? (
-                  <>
-                    <span className="w-4 h-4 border border-[#D4AF37]/40 border-t-[#D4AF37] rounded-full animate-spin" />
-                    Загружаем...
-                  </>
-                ) : (
-                  <>Загрузить ещё ({totalCars - cars.length} осталось)</>
-                )}
+                Показать ещё ({filtered.length - visibleCount} осталось)
               </button>
             </div>
           )}
