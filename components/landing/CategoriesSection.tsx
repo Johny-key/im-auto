@@ -3,7 +3,9 @@
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { ChevronRight } from "lucide-react";
+import Image from "next/image";
 import SectionTitle from "../ui/SectionTitle";
+
 const categories = [
   {
     slug: "ekonom",
@@ -13,8 +15,7 @@ const categories = [
     examples: "Hyundai Solaris, Kia Rio, Toyota Vitz",
     color: "from-[#1a3a2a] to-[#0d1e15]",
     accent: "#4ade80",
-    photoBg: "radial-gradient(ellipse at 60% 40%, #1a4a2a 0%, #0d2418 50%, #070f0a 100%)",
-    icon: "🚗",
+    photo: "/works/kia-k5/1.jpg",
   },
   {
     slug: "komfort",
@@ -24,8 +25,7 @@ const categories = [
     examples: "Hyundai Tucson, Kia Sportage, Toyota Camry",
     color: "from-[#1a2a3a] to-[#0d1520]",
     accent: "#60a5fa",
-    photoBg: "radial-gradient(ellipse at 60% 40%, #1a2e4a 0%, #0d1a30 50%, #070b18 100%)",
-    icon: "🚙",
+    photo: "/works/hyundai-tucson-2021/1.jpg",
   },
   {
     slug: "biznes",
@@ -35,8 +35,7 @@ const categories = [
     examples: "Genesis G80, BMW 5, Mercedes E-Class",
     color: "from-[#2a1a3a] to-[#18102a]",
     accent: "#c084fc",
-    photoBg: "radial-gradient(ellipse at 60% 40%, #2a1a4a 0%, #1a0f30 50%, #0f0818 100%)",
-    icon: "🏎️",
+    photo: "/works/bmw-x4/1.jpg",
   },
   {
     slug: "premium",
@@ -46,8 +45,7 @@ const categories = [
     examples: "Genesis GV80, BMW X7, Porsche Cayenne",
     color: "from-[#2a1f0a] to-[#1a1308]",
     accent: "#D4AF37",
-    photoBg: "radial-gradient(ellipse at 60% 40%, #3a2a0a 0%, #241a05 50%, #120d02 100%)",
-    icon: "👑",
+    photo: "/works/mercedes-gle450/1.jpg",
   },
 ];
 
@@ -86,10 +84,15 @@ export default function CategoriesSection() {
               />
 
               {/* Photo */}
-              <div className="relative w-full h-44 overflow-hidden flex items-center justify-center" style={{ background: cat.photoBg }}>
-                <span className="text-6xl opacity-30 select-none">{cat.icon}</span>
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/60" />
-                {/* Price badge */}
+              <div className="relative w-full h-44 overflow-hidden">
+                <Image
+                  src={cat.photo}
+                  alt={cat.label}
+                  fill
+                  className="object-cover transition-transform duration-500 group-hover:scale-105"
+                  sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 25vw"
+                />
+                <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/70" />
                 <div
                   className="absolute bottom-3 left-4 text-xs font-bold tracking-wide"
                   style={{ color: cat.accent }}
