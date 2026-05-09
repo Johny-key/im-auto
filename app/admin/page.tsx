@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { Plus, Upload, Trash2, Eye, LogOut, X, Check, Car, KeyRound } from "lucide-react";
+import { Plus, Upload, Trash2, Eye, LogOut, X, Check, Car, KeyRound, Settings2, TrendingUp, RefreshCw, MapPin, Pencil } from "lucide-react";
 
 type Work = {
   brand: string;
@@ -16,6 +16,26 @@ type Work = {
 };
 
 const COUNTRIES = ["Корея", "Китай", "Япония", "Европа", "США"];
+
+const SEGMENTS = ["Эконом", "Комфорт", "Бизнес", "Премиум"] as const;
+type Segment = typeof SEGMENTS[number];
+
+type SegmentFees = { broker_fee: number; agent_fee: number; car_markup: number; car_markup_type: "fixed" | "percent" };
+type FeesMap = Record<Segment, SegmentFees>;
+
+const DEFAULT_FEES: FeesMap = {
+  Эконом:  { broker_fee: 0, agent_fee: 0, car_markup: 0, car_markup_type: "fixed" },
+  Комфорт: { broker_fee: 0, agent_fee: 0, car_markup: 0, car_markup_type: "fixed" },
+  Бизнес:  { broker_fee: 0, agent_fee: 0, car_markup: 0, car_markup_type: "fixed" },
+  Премиум: { broker_fee: 0, agent_fee: 0, car_markup: 0, car_markup_type: "fixed" },
+};
+
+const SEG_COLORS: Record<Segment, string> = {
+  Эконом:  "#4ade80",
+  Комфорт: "#60a5fa",
+  Бизнес:  "#c084fc",
+  Премиум: "#D4AF37",
+};
 
 function categoryFromPrice(priceStr: string): string {
   const num = parseInt(priceStr.replace(/\D/g, ""), 10);
@@ -47,7 +67,11 @@ export default function AdminPage() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [tab, setTab] = useState<"cars" | "password">("cars");
+  const [tab, setTab] = useState<"cars" | "fees" | "rate" | "cities" | "password">("cars");
+
+  const [fees, setFees] = useState<FeesMap>(DEFAULT_FEES);
+  const [feesLoaded, setFeesLoaded] = useState(false);
+  const [feesSaving, setFeesSaving] = useState(false);
 
   const [works, setWorks] = useState<Work[]>([]);
   const [form, setForm] = useState(emptyForm);
@@ -57,6 +81,28 @@ export default function AdminPage() {
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // ── Rate state ─────────────────────────────────────────────
+  const [rateData, setRateData] = useState<{
+    wonRate: number; updatedAt: string | null; source: string;
+  } | null>(null);
+  const [rateInput, setRateInput] = useState("");
+  const [rateSaving, setRateSaving] = useState(false);
+  const [rateRefreshing, setRateRefreshing] = useState(false);
+
+  // ── Cities state ───────────────────────────────────────────
+  type City = { id: string; name: string; price: number };
+  const [cities, setCities] = useState<City[]>([]);
+  const [cityForm, setCityForm] = useState({ name: "", price: "" });
+  const [cityAdding, setCityAdding] = useState(false);
+  const [editingCityId, setEditingCityId] = useState<string | null>(null);
+  const [editCityForm, setEditCityForm] = useState({ name: "", price: "" });
+  const [cityUpdating, setCityUpdating] = useState(false);
+  const [cityDeleting, setCityDeleting] = useState<string | null>(null);
+
+  const [markupInputs, setMarkupInputs] = useState<Record<Segment, string>>({
+    Эконом: "", Комфорт: "", Бизнес: "", Премиум: "",
+  });
 
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -78,6 +124,36 @@ export default function AdminPage() {
       if (res.ok) {
         setWorks(await res.json());
         setAuthed(true);
+        const feesRes = await fetch("/api/admin/fees", {
+          headers: { Authorization: `Bearer ${password}` },
+        });
+        if (feesRes.ok) {
+          const raw = await feesRes.json();
+          setFees((prev) => {
+            const merged = { ...prev };
+            for (const seg of SEGMENTS) {
+              merged[seg] = { ...prev[seg], ...(raw[seg] ?? {}) };
+            }
+            return merged;
+          });
+          const initMarkups: Record<Segment, string> = { Эконом: "", Комфорт: "", Бизнес: "", Премиум: "" };
+          for (const seg of SEGMENTS) {
+            const v = raw[seg]?.car_markup ?? 0;
+            initMarkups[seg] = v === 0 ? "" : String(v);
+          }
+          setMarkupInputs(initMarkups);
+          setFeesLoaded(true);
+        }
+        const rateRes = await fetch("/api/admin/rate");
+        if (rateRes.ok) {
+          const rd = await rateRes.json();
+          setRateData(rd);
+          setRateInput(String(rd.wonRate));
+        }
+        const citiesRes = await fetch("/api/admin/cities", {
+          headers: { Authorization: `Bearer ${password}` },
+        });
+        if (citiesRes.ok) setCities(await citiesRes.json());
       } else {
         setAuthError("Неверный пароль");
       }
@@ -167,6 +243,33 @@ export default function AdminPage() {
     setSubmitting(false);
   }
 
+  async function handleFeesSave() {
+    setFeesSaving(true);
+    const res = await fetch("/api/admin/fees", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${password}`,
+      },
+      body: JSON.stringify(fees),
+    });
+    setFeesSaving(false);
+    if (res.ok) {
+      showToast("Наценки сохранены", true);
+    } else {
+      showToast("Ошибка сохранения наценок", false);
+    }
+  }
+
+  function updateFee(seg: Segment, field: "broker_fee" | "agent_fee" | "car_markup", raw: string) {
+    const val = parseInt(raw.replace(/\D/g, ""), 10) || 0;
+    setFees((f) => ({ ...f, [seg]: { ...f[seg], [field]: val } }));
+  }
+
+  function setMarkupType(seg: Segment, type: "fixed" | "percent") {
+    setFees((f) => ({ ...f, [seg]: { ...f[seg], car_markup_type: type } }));
+  }
+
   async function handlePasswordChange() {
     if (oldPw !== password) {
       showToast("Старый пароль неверный", false);
@@ -199,6 +302,100 @@ export default function AdminPage() {
     } else {
       const data = await res.json();
       showToast(data.error ?? "Ошибка", false);
+    }
+  }
+
+  async function handleCityAdd() {
+    const name  = cityForm.name.trim();
+    const price = parseInt(cityForm.price.replace(/\D/g, ""), 10);
+    if (!name || !price) { showToast("Укажите название и стоимость", false); return; }
+    setCityAdding(true);
+    const res = await fetch("/api/admin/cities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ name, price }),
+    });
+    setCityAdding(false);
+    if (res.ok) {
+      const city = await res.json();
+      setCities((c) => [...c, city]);
+      setCityForm({ name: "", price: "" });
+      showToast("Город добавлен", true);
+    } else {
+      showToast("Ошибка добавления", false);
+    }
+  }
+
+  async function handleCityUpdate(id: string) {
+    const name  = editCityForm.name.trim();
+    const price = parseInt(editCityForm.price.replace(/\D/g, ""), 10);
+    if (!name || !price) { showToast("Укажите название и стоимость", false); return; }
+    setCityUpdating(true);
+    const res = await fetch(`/api/admin/cities/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ name, price }),
+    });
+    setCityUpdating(false);
+    if (res.ok) {
+      const updated = await res.json();
+      setCities((c) => c.map((x) => (x.id === id ? updated : x)));
+      setEditingCityId(null);
+      showToast("Сохранено", true);
+    } else {
+      showToast("Ошибка сохранения", false);
+    }
+  }
+
+  async function handleCityDelete(id: string) {
+    setCityDeleting(id);
+    const res = await fetch(`/api/admin/cities/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${password}` },
+    });
+    setCityDeleting(null);
+    if (res.ok) {
+      setCities((c) => c.filter((x) => x.id !== id));
+      showToast("Город удалён", true);
+    } else {
+      showToast("Ошибка удаления", false);
+    }
+  }
+
+  async function handleRateSave() {
+    const val = parseFloat(rateInput.replace(",", "."));
+    if (!val || val <= 0) { showToast("Введите корректный курс", false); return; }
+    setRateSaving(true);
+    const res = await fetch("/api/admin/rate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ wonRate: val }),
+    });
+    setRateSaving(false);
+    if (res.ok) {
+      setRateData(await res.json());
+      showToast("Курс сохранён", true);
+    } else {
+      showToast("Ошибка сохранения", false);
+    }
+  }
+
+  async function handleRateRefresh() {
+    setRateRefreshing(true);
+    const res = await fetch("/api/admin/rate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${password}` },
+      body: JSON.stringify({ action: "refresh" }),
+    });
+    setRateRefreshing(false);
+    if (res.ok) {
+      const rd = await res.json();
+      setRateData(rd);
+      setRateInput(String(rd.wonRate));
+      showToast(`Курс обновлён: 1 万₩ = ${rd.wonRate} ₽`, true);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error ?? "Ошибка получения курса", false);
     }
   }
 
@@ -290,9 +487,9 @@ export default function AdminPage() {
           </div>
           {/* Tabs */}
           <div className="flex gap-1 -mb-px">
-            {(["cars", "password"] as const).map((t) => {
-              const labels = { cars: "Автомобили", password: "Пароль" };
-              const icons = { cars: <Car size={13} />, password: <KeyRound size={13} /> };
+            {(["cars", "fees", "rate", "cities", "password"] as const).map((t) => {
+              const labels = { cars: "Автомобили", fees: "Наценки", rate: "Курс ₩", cities: "Города", password: "Пароль" };
+              const icons  = { cars: <Car size={13} />, fees: <Settings2 size={13} />, rate: <TrendingUp size={13} />, cities: <MapPin size={13} />, password: <KeyRound size={13} /> };
               const active = tab === t;
               return (
                 <button
@@ -313,6 +510,356 @@ export default function AdminPage() {
       </div>
 
       <div className="max-w-6xl mx-auto px-6 py-10">
+
+        {/* ── Fees tab ─────────────────────────────────────── */}
+        {tab === "fees" && (
+          <div className="max-w-2xl">
+            <div className="bg-[#0F1629] border border-[rgba(212,175,55,0.12)] p-8">
+              <h2 className="flex items-center gap-2 font-display text-base tracking-[0.2em] text-[#D4AF37] mb-2">
+                <Settings2 size={16} /> НАЦЕНКИ ПО СЕГМЕНТАМ
+              </h2>
+              <p className="text-[#4a5568] text-xs mb-8">
+                Таможенный брокер и агентское вознаграждение добавляются к итоговой стоимости автомобиля.
+              </p>
+
+              {!feesLoaded ? (
+                <div className="text-[#4a5568] text-sm py-8 text-center">
+                  Нет соединения с парсером. Проверьте PARSER_API_URL в env.
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {SEGMENTS.map((seg) => {
+                    const color = SEG_COLORS[seg];
+                    return (
+                      <div
+                        key={seg}
+                        className="border border-[rgba(212,175,55,0.08)] p-5"
+                        style={{ borderLeftColor: color, borderLeftWidth: 2 }}
+                      >
+                        <div className="flex items-center gap-2 mb-4">
+                          <span
+                            className="text-[10px] px-2 py-0.5 tracking-wider"
+                            style={{ color, background: `${color}15`, border: `1px solid ${color}30` }}
+                          >
+                            {seg.toUpperCase()}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className={labelClass}>Таможенный брокер, ₽</label>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={fees[seg].broker_fee === 0 ? "" : fees[seg].broker_fee.toLocaleString("ru")}
+                              onChange={(e) => updateFee(seg, "broker_fee", e.target.value)}
+                              placeholder="0"
+                              className={inputClass}
+                            />
+                          </div>
+                          <div>
+                            <label className={labelClass}>Услуга агента, ₽</label>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={fees[seg].agent_fee === 0 ? "" : fees[seg].agent_fee.toLocaleString("ru")}
+                              onChange={(e) => updateFee(seg, "agent_fee", e.target.value)}
+                              placeholder="0"
+                              className={inputClass}
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-4 pt-4 border-t border-[rgba(212,175,55,0.08)]">
+                          <label className={labelClass}>Скрытая наценка к цене авто</label>
+                          <div className="flex gap-0">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={markupInputs[seg]}
+                              onChange={(e) => {
+                                let v = e.target.value.replace(/\./g, ",").replace(/[^\d,]/g, "");
+                                // Only one comma
+                                const ci = v.indexOf(",");
+                                if (ci !== -1) v = v.slice(0, ci + 1) + v.slice(ci + 1).replace(/,/g, "");
+                                // Auto-prepend 0 before leading comma
+                                if (v.startsWith(",")) v = "0" + v;
+                                setMarkupInputs((m) => ({ ...m, [seg]: v }));
+                                const val = parseFloat(v.replace(",", ".")) || 0;
+                                setFees((f) => ({ ...f, [seg]: { ...f[seg], car_markup: val } }));
+                              }}
+                              onBlur={() => {
+                                let v = markupInputs[seg];
+                                // "05" → "5", but "0,5" stays "0,5"
+                                v = v.replace(/^0+([1-9])/, "$1");
+                                // "00,5" → "0,5"
+                                v = v.replace(/^0+,/, "0,");
+                                // "5," → "5"
+                                v = v.replace(/,$/, "");
+                                setMarkupInputs((m) => ({ ...m, [seg]: v }));
+                              }}
+                              placeholder="0"
+                              className={inputClass + " flex-1"}
+                              style={{ borderRight: "none" }}
+                            />
+                            {(["fixed", "percent"] as const).map((t) => (
+                              <button
+                                key={t}
+                                onClick={() => setMarkupType(seg, t)}
+                                className="px-4 text-xs font-display border transition-all shrink-0"
+                                style={{
+                                  background: fees[seg].car_markup_type === t ? "#D4AF37" : "#070B17",
+                                  color: fees[seg].car_markup_type === t ? "#070B17" : "#8892A4",
+                                  borderColor: fees[seg].car_markup_type === t ? "#D4AF37" : "rgba(212,175,55,0.18)",
+                                }}
+                              >
+                                {t === "fixed" ? "₽" : "%"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {feesLoaded && (
+                <button
+                  onClick={handleFeesSave}
+                  disabled={feesSaving}
+                  className="mt-8 bg-[#D4AF37] text-[#070B17] font-bold px-8 py-3 tracking-[0.15em] text-sm hover:bg-[#c9a032] transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <Check size={15} />
+                  {feesSaving ? "СОХРАНЯЕТСЯ..." : "СОХРАНИТЬ НАЦЕНКИ"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Cities tab ───────────────────────────────────── */}
+        {tab === "cities" && (
+          <div className="max-w-xl">
+            <div className="bg-[#0F1629] border border-[rgba(212,175,55,0.12)] p-8">
+              <h2 className="flex items-center gap-2 font-display text-base tracking-[0.2em] text-[#D4AF37] mb-2">
+                <MapPin size={16} /> ГОРОДА И АВТОВОЗ
+              </h2>
+              <p className="text-[#4a5568] text-xs mb-8">
+                Стоимость доставки автомобиля автовозом до города. Клиент выбирает город на карточке товара.
+              </p>
+
+              {/* Add form */}
+              <div className="border border-[rgba(212,175,55,0.1)] p-5 mb-6">
+                <div className="text-[9px] text-[#8892A4] uppercase tracking-[0.25em] mb-4 font-display">
+                  Добавить город
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className={labelClass}>Название города</label>
+                    <input
+                      value={cityForm.name}
+                      onChange={(e) => setCityForm((f) => ({ ...f, name: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && handleCityAdd()}
+                      placeholder="Москва"
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Стоимость автовоза, ₽</label>
+                    <input
+                      value={cityForm.price}
+                      onChange={(e) => setCityForm((f) => ({ ...f, price: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && handleCityAdd()}
+                      inputMode="numeric"
+                      placeholder="150 000"
+                      className={inputClass}
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={handleCityAdd}
+                  disabled={cityAdding}
+                  className="flex items-center gap-2 bg-[#D4AF37] text-[#070B17] font-bold px-6 py-2.5 tracking-[0.15em] text-xs hover:bg-[#c9a032] transition-colors disabled:opacity-50"
+                >
+                  <Plus size={13} />
+                  {cityAdding ? "ДОБАВЛЯЕТСЯ..." : "ДОБАВИТЬ"}
+                </button>
+              </div>
+
+              {/* Cities list */}
+              {cities.length === 0 ? (
+                <div className="text-[#4a5568] text-sm text-center py-10 border border-dashed border-[rgba(212,175,55,0.08)]">
+                  Города не добавлены
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {cities.map((city) =>
+                    editingCityId === city.id ? (
+                      <div
+                        key={city.id}
+                        className="border border-[#D4AF37]/30 p-4 bg-[#D4AF37]/5"
+                      >
+                        <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div>
+                            <label className={labelClass}>Название</label>
+                            <input
+                              value={editCityForm.name}
+                              onChange={(e) => setEditCityForm((f) => ({ ...f, name: e.target.value }))}
+                              className={inputClass}
+                            />
+                          </div>
+                          <div>
+                            <label className={labelClass}>Стоимость, ₽</label>
+                            <input
+                              value={editCityForm.price}
+                              onChange={(e) => setEditCityForm((f) => ({ ...f, price: e.target.value }))}
+                              inputMode="numeric"
+                              className={inputClass}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleCityUpdate(city.id)}
+                            disabled={cityUpdating}
+                            className="flex items-center gap-1.5 bg-[#D4AF37] text-[#070B17] font-bold px-4 py-2 text-xs tracking-wider hover:bg-[#c9a032] transition-colors disabled:opacity-50"
+                          >
+                            <Check size={12} /> {cityUpdating ? "..." : "Сохранить"}
+                          </button>
+                          <button
+                            onClick={() => setEditingCityId(null)}
+                            className="flex items-center gap-1.5 border border-[rgba(212,175,55,0.2)] text-[#8892A4] px-4 py-2 text-xs hover:text-[#F0EDE8] transition-colors"
+                          >
+                            <X size={12} /> Отмена
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        key={city.id}
+                        className="flex items-center justify-between border border-[rgba(212,175,55,0.08)] px-4 py-3 group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <MapPin size={13} className="text-[#D4AF37]/50 shrink-0" />
+                          <span className="text-[#F0EDE8] text-sm">{city.name}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-[#D4AF37] text-sm font-display">
+                            ~{city.price.toLocaleString("ru")} ₽
+                          </span>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => {
+                                setEditingCityId(city.id);
+                                setEditCityForm({ name: city.name, price: String(city.price) });
+                              }}
+                              className="p-1.5 text-[#8892A4] hover:text-[#D4AF37] transition-colors"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleCityDelete(city.id)}
+                              disabled={cityDeleting === city.id}
+                              className="p-1.5 text-[#8892A4] hover:text-red-400 transition-colors disabled:opacity-40"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Rate tab ─────────────────────────────────────── */}
+        {tab === "rate" && (
+          <div className="max-w-md">
+            <div className="bg-[#0F1629] border border-[rgba(212,175,55,0.12)] p-8">
+              <h2 className="flex items-center gap-2 font-display text-base tracking-[0.2em] text-[#D4AF37] mb-2">
+                <TrendingUp size={16} /> КУРС КОРЕЙСКОЙ ВОНЫ
+              </h2>
+              <p className="text-[#4a5568] text-xs mb-8">
+                Используется для расчёта стоимости на карточках каталога. Автообновление — ежедневно в 08:00 МСК с сайта ЦБ РФ.
+              </p>
+
+              {/* Current rate display */}
+              {rateData && (
+                <div className="border border-[rgba(212,175,55,0.15)] bg-[#070B17] p-5 mb-6">
+                  <div className="text-[9px] text-[#8892A4] uppercase tracking-[0.25em] mb-2">Текущий курс</div>
+                  <div className="flex items-baseline gap-2 mb-3">
+                    <span className="font-display text-3xl text-[#D4AF37]">{rateData.wonRate}</span>
+                    <span className="text-[#8892A4] text-sm">₽ за 1 万₩</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px]">
+                    <span
+                      className="px-2 py-0.5 tracking-wider"
+                      style={{
+                        color: rateData.source === "cbr" ? "#4ade80" : rateData.source === "manual" ? "#60a5fa" : "#8892A4",
+                        background: rateData.source === "cbr" ? "#4ade8015" : rateData.source === "manual" ? "#60a5fa15" : "#8892A415",
+                        border: `1px solid ${rateData.source === "cbr" ? "#4ade8030" : rateData.source === "manual" ? "#60a5fa30" : "#8892A430"}`,
+                      }}
+                    >
+                      {rateData.source === "cbr" ? "ЦБ РФ" : rateData.source === "manual" ? "вручную" : "по умолчанию"}
+                    </span>
+                    {rateData.updatedAt && (
+                      <span className="text-[#4a5568]">
+                        {new Date(rateData.updatedAt).toLocaleString("ru", {
+                          day: "2-digit", month: "2-digit", year: "numeric",
+                          hour: "2-digit", minute: "2-digit",
+                        })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Manual input */}
+              <div className="mb-4">
+                <label className={labelClass}>Установить вручную (₽ за 1 万₩)</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={rateInput}
+                  onChange={(e) => setRateInput(e.target.value)}
+                  placeholder="650"
+                  className={inputClass}
+                />
+                <p className="text-[#4a5568] text-[10px] mt-1.5">
+                  Например: 650 означает 1 万₩ (10 000 ₩) = 650 ₽
+                </p>
+              </div>
+
+              <div className="flex gap-3 flex-wrap">
+                <button
+                  onClick={handleRateSave}
+                  disabled={rateSaving}
+                  className="flex items-center gap-2 bg-[#D4AF37] text-[#070B17] font-bold px-6 py-2.5 tracking-[0.15em] text-xs hover:bg-[#c9a032] transition-colors disabled:opacity-50"
+                >
+                  <Check size={13} />
+                  {rateSaving ? "СОХРАНЯЕТСЯ..." : "СОХРАНИТЬ"}
+                </button>
+                <button
+                  onClick={handleRateRefresh}
+                  disabled={rateRefreshing}
+                  className="flex items-center gap-2 border border-[rgba(212,175,55,0.3)] text-[#D4AF37] px-6 py-2.5 tracking-[0.15em] text-xs hover:bg-[#D4AF37]/10 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={rateRefreshing ? "animate-spin" : ""} />
+                  {rateRefreshing ? "ЗАПРОС..." : "ОБНОВИТЬ С ЦБ РФ"}
+                </button>
+              </div>
+
+              <div className="mt-6 border-t border-[rgba(212,175,55,0.08)] pt-5">
+                <div className="text-[9px] text-[#8892A4] uppercase tracking-[0.25em] mb-2">Автообновление</div>
+                <p className="text-[#4a5568] text-xs leading-relaxed">
+                  Каждый день в 08:00 МСК скрипт автоматически запрашивает курс КРВ/RUB у ЦБ РФ и обновляет данные.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Password tab ─────────────────────────────────── */}
         {tab === "password" && (

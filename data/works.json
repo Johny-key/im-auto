@@ -17,7 +17,7 @@
   },
   {
     "brand": "Kia",
-    "model": "K5 2.0AT Noblesse",
+    "model": "K5 2.0 AT",
     "year": 2022,
     "mileage": "35 783 км",
     "price": "2 710 000 ₽",
@@ -49,7 +49,7 @@
   },
   {
     "brand": "Hyundai",
-    "model": "Tucson 1.6 Turbo Inspiration 2WD",
+    "model": "Tucson 1.6 Turbo 2WD",
     "year": 2021,
     "mileage": "66 081 км",
     "price": "2 650 000 ₽",
@@ -61,6 +61,22 @@
       "/works/hyundai-tucson-2021/2.jpg",
       "/works/hyundai-tucson-2021/3.jpg",
       "/works/hyundai-tucson-2021/4.jpg"
+    ]
+  },
+  {
+    "brand": "Mercedes-Benz",
+    "model": "GLE 450 Coupe 4MATIC AMG Line",
+    "year": 2021,
+    "mileage": "50 000 км",
+    "price": "7 500 000 ₽",
+    "country": "Китай",
+    "category": "Премиум",
+    "specs": "3.0T · 367 л.с. · AWD · 9AT · Бензин · AMG Line",
+    "photos": [
+      "/works/mercedes-gle450/1.jpg",
+      "/works/mercedes-gle450/2.jpg",
+      "/works/mercedes-gle450/3.jpg",
+      "/works/mercedes-gle450/4.jpg"
     ]
   }
 ]

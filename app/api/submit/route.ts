@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 
+// Simple in-memory rate limiter: max 5 submissions per IP per hour
+const RATE_LIMIT = 5;
+const WINDOW_MS = 60 * 60 * 1000;
+const ipLog = new Map<string, number[]>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const cutoff = now - WINDOW_MS;
+  const hits = (ipLog.get(ip) ?? []).filter((t) => t > cutoff);
+  if (hits.length >= RATE_LIMIT) return true;
+  hits.push(now);
+  ipLog.set(ip, hits);
+  return false;
+}
+
 function moscowTime() {
   return new Date().toLocaleString("ru-RU", {
     timeZone: "Europe/Moscow",
@@ -58,15 +73,31 @@ async function appendSheet(name: string, phone: string, email: string, message: 
 }
 
 export async function POST(req: NextRequest) {
-  const { name, phone, email = "", message = "" } = await req.json();
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  if (isRateLimited(ip)) {
+    return NextResponse.json({ error: "too_many_requests" }, { status: 429 });
+  }
 
-  if (!name || !phone || phone.replace(/\D/g, "").length !== 11) {
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "invalid_data" }, { status: 400 });
+
+  const { name, phone, email = "", message = "" } = body;
+
+  if (
+    typeof name !== "string" || !name.trim() ||
+    typeof phone !== "string" || phone.replace(/\D/g, "").length !== 11
+  ) {
     return NextResponse.json({ error: "invalid_data" }, { status: 400 });
   }
 
+  const safeName    = name.trim().slice(0, 100);
+  const safePhone   = phone.trim().slice(0, 20);
+  const safeEmail   = String(email).trim().slice(0, 200);
+  const safeMessage = String(message).trim().slice(0, 1000);
+
   const [tgResult, sheetResult] = await Promise.allSettled([
-    sendTelegram(name, phone, email, message),
-    appendSheet(name, phone, email, message),
+    sendTelegram(safeName, safePhone, safeEmail, safeMessage),
+    appendSheet(safeName, safePhone, safeEmail, safeMessage),
   ]);
 
   if (tgResult.status === "rejected") console.error("Telegram error:", tgResult.reason);
