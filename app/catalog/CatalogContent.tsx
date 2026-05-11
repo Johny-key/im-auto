@@ -944,11 +944,11 @@ function CarCard({ car, index, wonRate, eurRate, cities, fees, onConsult }: {
           {/* Rows */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
             <div className="text-[9px] text-[#8892A4] uppercase tracking-[0.25em] mb-3 font-display">
-              Цена и расходы в Корее
+              Детализация цены
             </div>
 
             <div className="flex items-start justify-between py-2.5 border-b border-white/[0.05]">
-              <span className="text-[#8892A4] text-xs">Цена автомобиля</span>
+              <span className="text-[#8892A4] text-xs">Цена автомобиля и расходы в Корее</span>
               <div className="text-right">
                 <div className="text-[#F0EDE8] text-xs font-display">
                   ≈ {costs.priceRub.toLocaleString("ru")} ₽
