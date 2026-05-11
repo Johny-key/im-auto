@@ -885,7 +885,7 @@ function CarCard({ car, index, wonRate, eurRate, cities, fees, onConsult }: {
             <div className="h-px my-3" style={{ background: `linear-gradient(90deg, ${accent}30, transparent)` }} />
 
             <div className="flex items-center justify-between mb-5">
-              <span className="text-[#8892A4] text-xs uppercase tracking-wider">Под ключ</span>
+              <span className="text-[#8892A4] text-xs uppercase tracking-wider">Под ключ в РФ</span>
               <span className="font-bold text-base shimmer-text">
                 {car.priceWon > 0 ? `~${costs.total.toLocaleString("ru")} ₽` : "—"}
               </span>
