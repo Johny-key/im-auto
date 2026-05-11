@@ -1,0 +1,7 @@
+{
+  "korea_fee_won": 2500000,
+  "Эконом":  { "broker_fee": 0, "agent_fee": 0 },
+  "Комфорт": { "broker_fee": 0, "agent_fee": 0 },
+  "Бизнес":  { "broker_fee": 0, "agent_fee": 0 },
+  "Премиум": { "broker_fee": 0, "agent_fee": 0 }
+}

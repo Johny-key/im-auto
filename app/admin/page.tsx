@@ -70,6 +70,8 @@ export default function AdminPage() {
   const [tab, setTab] = useState<"cars" | "fees" | "rate" | "cities" | "password">("cars");
 
   const [fees, setFees] = useState<FeesMap>(DEFAULT_FEES);
+  const [koreaFeeWon, setKoreaFeeWon] = useState(2500000);
+  const [koreaFeeInput, setKoreaFeeInput] = useState("2500000");
   const [feesLoaded, setFeesLoaded] = useState(false);
   const [feesSaving, setFeesSaving] = useState(false);
 
@@ -142,6 +144,9 @@ export default function AdminPage() {
             initMarkups[seg] = v === 0 ? "" : String(v);
           }
           setMarkupInputs(initMarkups);
+          const kfw = raw.korea_fee_won ?? 2500000;
+          setKoreaFeeWon(kfw);
+          setKoreaFeeInput(String(kfw));
           setFeesLoaded(true);
         }
         const rateRes = await fetch("/api/admin/rate");
@@ -251,7 +256,7 @@ export default function AdminPage() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${password}`,
       },
-      body: JSON.stringify(fees),
+      body: JSON.stringify({ segments: fees, korea_fee_won: koreaFeeWon }),
     });
     setFeesSaving(false);
     if (res.ok) {
@@ -528,6 +533,28 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-5">
+
+                  {/* Global Korea fee */}
+                  <div className="border border-[rgba(212,175,55,0.15)] p-5 bg-[#070B17]">
+                    <div className="text-[10px] text-[#D4AF37] tracking-[0.25em] uppercase mb-3">Глобальная наценка (все категории)</div>
+                    <label className={labelClass}>Корейские расходы, ₩</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={koreaFeeInput}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/\D/g, "");
+                        setKoreaFeeInput(v);
+                        setKoreaFeeWon(parseInt(v) || 0);
+                      }}
+                      placeholder="2500000"
+                      className={inputClass}
+                    />
+                    <p className="text-[#4a5568] text-[11px] mt-2">
+                      Прибавляется к цене каждого автомобиля до расчёта стоимости под ключ.
+                    </p>
+                  </div>
+
                   {SEGMENTS.map((seg) => {
                     const color = SEG_COLORS[seg];
                     return (

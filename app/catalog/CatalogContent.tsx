@@ -138,6 +138,7 @@ export default function CatalogContent() {
   const [error, setError] = useState(false);
   const [wonRate, setWonRate] = useState(650);
   const [eurRate, setEurRate] = useState(95);
+  const [koreaFeeWon, setKoreaFeeWon] = useState(2500000);
   const [cities, setCities] = useState<City[]>([]);
   const [fees, setFees] = useState<FeesMap>({});
 
@@ -198,9 +199,17 @@ export default function CatalogContent() {
 
     fetch("/api/catalog/fees")
       .then((r) => r.json())
-      .then((d) => { if (d && typeof d === "object") setFees(d); })
+      .then((d) => {
+        if (d && typeof d === "object") {
+          setFees(d);
+          if (typeof d.korea_fee_won === "number") setKoreaFeeWon(d.korea_fee_won);
+        }
+      })
       .catch(() => {});
   }, []);
+
+  // korea_fee_won is stored in raw won; encar prices are in 万₩ (10 000 won)
+  const koreaFeeMaWon = koreaFeeWon / 10_000;
 
   const filtered = useMemo(() => {
     let list = allCars.filter(isCalculable);
@@ -210,7 +219,7 @@ export default function CatalogContent() {
     if (activeCategory !== "all") {
       list = list.filter(car => {
         const segFees = fees[car.category] ?? { broker_fee: 25_000, agent_fee: 180_000 };
-        const costs = calcCosts(car.priceWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed");
+        const costs = calcCosts(car.priceWon + koreaFeeMaWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed");
         return costs ? slugMap[categoryFromRub(costs.total)] === activeCategory : false;
       });
     }
@@ -218,14 +227,14 @@ export default function CatalogContent() {
       list = [...list].sort((a, b) => {
         const getTotal = (car: Car) => {
           const segFees = fees[car.category] ?? { broker_fee: 25_000, agent_fee: 180_000 };
-          const costs = calcCosts(car.priceWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed");
+          const costs = calcCosts(car.priceWon + koreaFeeMaWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed");
           return costs?.total ?? 0;
         };
         return priceSort === "asc" ? getTotal(a) - getTotal(b) : getTotal(b) - getTotal(a);
       });
     }
     return list;
-  }, [allCars, activeCategory, selectedBrand, yearFrom, yearTo, priceSort, wonRate, eurRate, fees]);
+  }, [allCars, activeCategory, selectedBrand, yearFrom, yearTo, priceSort, wonRate, eurRate, fees, koreaFeeMaWon]);
 
   // Reset visible count when filters change
   useEffect(() => { setVisibleCount(30); }, [activeCategory, selectedBrand, yearFrom, yearTo, priceSort]);
@@ -482,7 +491,7 @@ export default function CatalogContent() {
                   className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
                 >
                   {visible.map((car, i) => (
-                    <CarCard key={car.id} car={car} index={i} wonRate={wonRate} eurRate={eurRate} cities={cities} fees={fees} onConsult={() => setModalOpen(true)} />
+                    <CarCard key={car.id} car={car} index={i} wonRate={wonRate} eurRate={eurRate} koreaFeeMaWon={koreaFeeMaWon} cities={cities} fees={fees} onConsult={() => setModalOpen(true)} />
                   ))}
                 </motion.div>
               )}
@@ -745,16 +754,17 @@ function calcCosts(
 
 /* ── Card ─────────────────────────────────────────────────────── */
 
-function CarCard({ car, index, wonRate, eurRate, cities, fees, onConsult }: {
-  car: Car; index: number; wonRate: number; eurRate: number; cities: City[]; fees: FeesMap; onConsult: () => void;
+function CarCard({ car, index, wonRate, eurRate, koreaFeeMaWon, cities, fees, onConsult }: {
+  car: Car; index: number; wonRate: number; eurRate: number; koreaFeeMaWon: number; cities: City[]; fees: FeesMap; onConsult: () => void;
 }) {
   const [photoIndex, setPhotoIndex] = useState(0);
   const [direction, setDirection] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [selectedCityId, setSelectedCityId] = useState("");
   const total = car.photos.length;
+  const effectivePriceWon = car.priceWon + koreaFeeMaWon;
   const segFees = fees[car.category] ?? { broker_fee: 25_000, agent_fee: 180_000 };
-  const costs = calcCosts(car.priceWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed")!;
+  const costs = calcCosts(effectivePriceWon, wonRate, eurRate, segFees.broker_fee, segFees.agent_fee, car.engineVolumeCc, car.horsepower, car.engine, car.carYear, segFees.car_markup ?? 0, segFees.car_markup_type ?? "fixed")!;
   const displayCategory = categoryFromRub(costs.total);
   const accent = categoryColors[displayCategory] ?? "#D4AF37";
   const fmt = (n: number) => `~${n.toLocaleString("ru")} ₽`;
@@ -949,14 +959,9 @@ function CarCard({ car, index, wonRate, eurRate, cities, fees, onConsult }: {
 
             <div className="flex items-start justify-between py-2.5 border-b border-white/[0.05]">
               <span className="text-[#8892A4] text-xs">Цена автомобиля и расходы в Корее</span>
-              <div className="text-right">
-                <div className="text-[#F0EDE8] text-xs font-display">
-                  ≈ {costs.priceRub.toLocaleString("ru")} ₽
-                </div>
-                <div className="text-[#8892A4] text-[10px] mt-0.5">
-                  {car.priceWon.toLocaleString("ru")} 万₩
-                </div>
-              </div>
+              <span className="text-[#F0EDE8] text-xs font-display">
+                ≈ {costs.priceRub.toLocaleString("ru")} ₽
+              </span>
             </div>
 
             <CostRow label="Утильсбор"             value={fmt(costs.recycling)} accent={accent} />
