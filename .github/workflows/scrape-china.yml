@@ -52,7 +52,7 @@ jobs:
         working-directory: parser
         run: python3 scraper_china.py ${{ github.event.inputs.mode }}
         env:
-          DATABASE_URL: "postgresql+asyncpg://postgres:encar@localhost:5432/encar"
+          DATABASE_URL: "postgresql+asyncpg://postgres:encar@localhost:5432/encar?ssl=disable"
           CHINA_PAGE_SIZE: "10"
           CHINA_NAV_TIMEOUT: "60000"
           CHINA_EXTRA_WAIT_MS: "5000"
