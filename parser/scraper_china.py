@@ -620,10 +620,36 @@ async def mark_unavailable():
         log.info(f"Marked {result.rowcount} stale China cars unavailable")
 
 
+# ── Output: JSON file or DB ────────────────────────────────────────────────────
+
+OUTPUT_JSON = os.getenv("CHINA_OUTPUT_JSON", "")  # if set, save to file instead of DB
+
+_json_buffer: list[dict] = []
+
+async def _save_cars(mapped: list[dict]):
+    """Save cars to JSON buffer or directly to DB."""
+    if OUTPUT_JSON:
+        _json_buffer.extend(mapped)
+        log.info(f"Buffered {len(mapped)} cars (total {len(_json_buffer)})")
+    else:
+        await upsert_cars(mapped)
+
+
+def _flush_json():
+    """Write buffered cars to OUTPUT_JSON file."""
+    if not OUTPUT_JSON or not _json_buffer:
+        return
+    Path(OUTPUT_JSON).write_text(
+        json.dumps(_json_buffer, ensure_ascii=False, default=str, indent=2),
+        encoding="utf-8",
+    )
+    log.info(f"Saved {len(_json_buffer)} cars to {OUTPUT_JSON}")
+
+
 # ── Sync modes ─────────────────────────────────────────────────────────────────
 
 async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
-    """Fetch pages start_page..end_page, parse HTML, upsert to DB. Returns pages done."""
+    """Fetch pages start_page..end_page, parse HTML, save cars. Returns pages done."""
     done = 0
     for page_num in range(start_page, end_page + 1):
         cars_raw = await _fetch_page(context, page_num)
@@ -632,7 +658,7 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
             break
         mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
         if mapped:
-            await upsert_cars(mapped)
+            await _save_cars(mapped)
         done += 1
         if page_num % 20 == 0:
             log.info(f"{label}Progress: {page_num} pages done")
@@ -641,7 +667,8 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
 
 async def run_full_sync():
     log.info("China full sync starting (HTML parse)...")
-    await init_db()
+    if not OUTPUT_JSON:
+        await init_db()
 
     cp = _load_checkpoint()
     start_page = cp.get("last_page", 0) + 1
@@ -665,7 +692,7 @@ async def run_full_sync():
                     break
                 mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
                 if mapped:
-                    await upsert_cars(mapped)
+                    await _save_cars(mapped)
                 _save_checkpoint({"last_page": page_num})
                 if page_num % 20 == 0:
                     log.info(f"Full sync progress: {page_num} pages")
@@ -673,8 +700,10 @@ async def run_full_sync():
         finally:
             await browser.close()
 
-    await mark_unavailable()
-    await enrich_segments()
+    _flush_json()
+    if not OUTPUT_JSON:
+        await mark_unavailable()
+        await enrich_segments()
     _save_checkpoint({})
     log.info("China full sync complete")
 
@@ -682,6 +711,8 @@ async def run_full_sync():
 async def run_incremental_sync():
     """Fetch the N most recent pages only."""
     log.info(f"China incremental sync starting ({INCREMENTAL_PAGES} pages, HTML parse)...")
+    if not OUTPUT_JSON:
+        await init_db()
 
     try:
         from playwright.async_api import async_playwright
@@ -696,7 +727,9 @@ async def run_incremental_sync():
         finally:
             await browser.close()
 
-    await enrich_segments()
+    _flush_json()
+    if not OUTPUT_JSON:
+        await enrich_segments()
     log.info("China incremental sync complete")
 
 

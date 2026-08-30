@@ -18,9 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,30 +31,35 @@ jobs:
         working-directory: parser
         run: |
           pip install -r requirements.txt
-          pip install playwright
+          pip install playwright sshpass
           playwright install chromium --with-deps
-
-      - name: Open SSH tunnel to VPS DB
-        run: |
           sudo apt-get install -y sshpass
-          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=60 \
-            -N -L 5432:localhost:5432 \
-            root@185.219.41.49 &
-          sleep 5
-          echo "SSH tunnel started"
 
-      - name: Run scraper
+      - name: Run scraper (save to JSON)
         working-directory: parser
         run: python3 scraper_china.py ${{ github.event.inputs.mode }}
         env:
-          DATABASE_URL: "postgresql+asyncpg://postgres:encar@localhost:5432/encar?ssl=disable"
+          CHINA_OUTPUT_JSON: "/tmp/china_cars.json"
           CHINA_PAGE_SIZE: "10"
           CHINA_NAV_TIMEOUT: "60000"
           CHINA_EXTRA_WAIT_MS: "5000"
           CHINA_INCREMENTAL_PAGES: "100"
           CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
+
+      - name: Upload JSON to VPS and import
+        if: github.event.inputs.mode != 'dump'
+        run: |
+          # Copy scraped data to VPS
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" scp \
+            -o StrictHostKeyChecking=no \
+            /tmp/china_cars.json \
+            root@185.219.41.49:/tmp/china_cars.json
+
+          # Run import on VPS (connects to local DB, no SSL issues)
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            root@185.219.41.49 \
+            "cd /root/parser && python3 import_china.py /tmp/china_cars.json"
 
       - name: Upload diagnostics (dump mode)
         if: github.event.inputs.mode == 'dump' && always()
