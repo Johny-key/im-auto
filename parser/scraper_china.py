@@ -46,8 +46,10 @@ log = logging.getLogger(__name__)
 
 # Mobile listing page — Playwright navigates here; the page internally calls the API
 CHE168_LIST_BASE   = "https://m.che168.com/china/list/"
-# Pattern to match in intercepted XHR responses
-CHE168_API_PATTERN = "api2scsou.che168.com/api/v11/search"
+# Pattern to match in intercepted XHR responses — any che168 API subdomain
+# Old: api2scsou.che168.com/api/v11/search
+# New: apiiautoappsh.che168.com (discovered 2026-08-30 via XHR capture)
+CHE168_API_PATTERN = "che168.com"  # broad match — filter by content below
 
 CHINA_PROXY        = os.getenv("CHINA_PROXY")
 PAGE_SIZE          = int(os.getenv("CHINA_PAGE_SIZE", 10))   # che168 default = 10
@@ -275,50 +277,57 @@ async def _fetch_page(context, page_num: int) -> dict | None:
     Returns the parsed JSON dict from che168's search API, or None on failure.
     """
     page = await context.new_page()
-    captured: list[dict] = []
-    all_xhr_urls: list[str] = []
+    # Store (response_object, body_bytes) tuples for all JSON XHRs
+    captured_responses: list = []
 
-    def _on_response(response):
+    async def _on_response(response):
         ct = response.headers.get("content-type", "")
-        if "json" in ct and response.status == 200:
-            all_xhr_urls.append(response.url)
-            if CHE168_API_PATTERN in response.url or "che168" in response.url:
-                captured.append(response)
+        if "json" in ct and response.status == 200 and CHE168_API_PATTERN in response.url:
+            try:
+                body = await response.body()
+                captured_responses.append((response.url, body))
+            except Exception:
+                captured_responses.append((response.url, b""))
 
     page.on("response", _on_response)
 
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        # Extra wait for XHR to fire after DOM load
         await page.wait_for_timeout(EXTRA_WAIT_MS)
     except Exception as e:
         log.warning(f"Page {page_num} navigation error: {e}")
     finally:
         page.remove_listener("response", _on_response)
 
-    if all_xhr_urls:
-        log.info(f"Page {page_num}: captured JSON XHR URLs: {all_xhr_urls[:10]}")
+    if captured_responses:
+        log.info(f"Page {page_num}: {len(captured_responses)} JSON XHRs from che168.com:")
+        for resp_url, body in captured_responses:
+            log.info(f"  [{len(body)}b] {resp_url[:120]}")
+            log.info(f"  preview: {body[:200]}")
     else:
-        log.warning(f"Page {page_num}: no JSON XHR captured at all")
+        log.warning(f"Page {page_num}: no JSON XHR captured from che168.com")
 
     result = None
-    for resp in captured:
+    for resp_url, body in captured_responses:
         try:
-            data = await resp.json()
+            data = json.loads(body)
             if DEBUG_DUMP_DIR:
                 Path(DEBUG_DUMP_DIR).mkdir(parents=True, exist_ok=True)
                 dump_file = Path(DEBUG_DUMP_DIR) / f"page_{page_num}.json"
                 dump_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-            # Accept if returncode == 0 or if "result"/"list" present
-            rc = data.get("returncode", data.get("code", 0))
-            if rc == 0 or "result" in data or "list" in data:
+            # Skip non-list responses (user info, search guide, etc.)
+            items = _extract_items(data)
+            if items:
+                result = data
+                log.info(f"Page {page_num}: found car list at {resp_url[:80]} ({len(items)} items)")
+                break
+            rc = data.get("returncode", data.get("code", -1))
+            if rc == 0 and ("result" in data or "list" in data):
                 result = data
                 break
-            else:
-                log.warning(f"Page {page_num}: API returned error code {rc}: {data.get('message')}")
         except Exception as e:
-            log.warning(f"Page {page_num}: failed to parse response JSON: {e}")
+            log.warning(f"Page {page_num}: failed to parse JSON from {resp_url[:60]}: {e}")
 
     await page.close()
     return result
