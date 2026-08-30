@@ -50,17 +50,17 @@ jobs:
       - name: Upload JSON to VPS and import
         if: github.event.inputs.mode != 'dump'
         run: |
+          SSH_OPTS="-o StrictHostKeyChecking=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no"
+
           # Copy scraped data to VPS
-          sshpass -p "${{ secrets.SSH_PASSWORD }}" scp \
-            -o StrictHostKeyChecking=no \
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" scp $SSH_OPTS \
             /tmp/china_cars.json \
             root@185.219.41.49:/tmp/china_cars.json
 
-          # Run import on VPS (connects to local DB, no SSL issues)
-          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh \
-            -o StrictHostKeyChecking=no \
-            root@185.219.41.49 \
-            "cd /root/parser && python3 import_china.py /tmp/china_cars.json"
+          # Copy JSON into container and run import inside it
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh $SSH_OPTS root@185.219.41.49 \
+            "docker cp /tmp/china_cars.json parser-api-1:/tmp/china_cars.json && \
+             docker exec parser-api-1 python3 /app/import_china.py /tmp/china_cars.json"
 
       - name: Upload diagnostics (dump mode)
         if: github.event.inputs.mode == 'dump' && always()
