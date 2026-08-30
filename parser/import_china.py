@@ -85,6 +85,18 @@ async def main(json_path: str):
             "updated_at":    now,
         })
 
+    # Deduplicate by id (scraper may produce duplicates across pages)
+    seen_ids: set[str] = set()
+    unique_rows = []
+    for r in rows:
+        if r["id"] not in seen_ids:
+            seen_ids.add(r["id"])
+            unique_rows.append(r)
+    skipped = len(rows) - len(unique_rows)
+    if skipped:
+        log.info(f"Skipped {skipped} duplicate IDs before upsert")
+    rows = unique_rows
+
     # Upsert in batches of 100
     batch_size = 100
     for i in range(0, len(rows), batch_size):
