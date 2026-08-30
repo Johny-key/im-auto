@@ -294,6 +294,12 @@ async def _fetch_page(context, page_num: int) -> dict | None:
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        # Wait for initial JS to run
+        await page.wait_for_timeout(3000)
+        # Scroll down to trigger lazy-loaded car list XHR
+        await page.evaluate("window.scrollTo(0, 400)")
+        await page.wait_for_timeout(2000)
+        await page.evaluate("window.scrollTo(0, 800)")
         await page.wait_for_timeout(EXTRA_WAIT_MS)
     except Exception as e:
         log.warning(f"Page {page_num} navigation error: {e}")
@@ -633,25 +639,29 @@ async def run_dump(page_num: int):
         browser, context = await _make_browser_context(pw)
         try:
             # Take screenshot of what browser sees before waiting for XHR
-            page = await context.new_page()
+            diag_page = await context.new_page()
             url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
-            log.info(f"Navigating to {url} ...")
+            log.info(f"Navigating to {url} for screenshot...")
             try:
-                await page.goto(url, wait_until="commit", timeout=30_000)
-                await page.wait_for_timeout(3000)
-                title = await page.title()
-                current_url = page.url
+                await diag_page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                await diag_page.wait_for_timeout(4000)
+                await diag_page.evaluate("window.scrollTo(0, 400)")
+                await diag_page.wait_for_timeout(3000)
+                title = await diag_page.title()
+                current_url = diag_page.url
                 log.info(f"Page title: {title!r}, URL: {current_url}")
                 screenshot_path = "/tmp/che168_screenshot.png"
-                await page.screenshot(path=screenshot_path, full_page=False)
+                await diag_page.screenshot(path=screenshot_path, full_page=True)
                 log.info(f"Screenshot saved to {screenshot_path}")
-                # Print first 2000 chars of page HTML
-                html = await page.content()
-                print(f"\n--- Page HTML (first 2000 chars) ---\n{html[:2000]}\n---", file=sys.stderr)
+                html = await diag_page.content()
+                html_path = "/tmp/che168_page.html"
+                Path(html_path).write_text(html, encoding="utf-8")
+                log.info(f"Full HTML saved to {html_path} ({len(html)} chars)")
+                print(f"\n--- Page HTML (first 3000 chars) ---\n{html[:3000]}\n---", file=sys.stderr)
             except Exception as e:
                 log.warning(f"Screenshot navigation error: {e}")
             finally:
-                await page.close()
+                await diag_page.close()
 
             data = await _fetch_page(context, page_num)
             if data:

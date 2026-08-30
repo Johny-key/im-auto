@@ -48,10 +48,12 @@ jobs:
           CHINA_INCREMENTAL_PAGES: "100"
           CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
 
-      - name: Upload screenshot (dump mode)
+      - name: Upload diagnostics (dump mode)
         if: github.event.inputs.mode == 'dump' && always()
         uses: actions/upload-artifact@v4
         with:
-          name: che168-screenshot
-          path: /tmp/che168_screenshot.png
+          name: che168-diagnostics
+          path: |
+            /tmp/che168_screenshot.png
+            /tmp/che168_page.html
           if-no-files-found: ignore
