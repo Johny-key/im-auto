@@ -37,11 +37,22 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
+      - name: Open SSH tunnel to VPS DB
+        run: |
+          sudo apt-get install -y sshpass
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=60 \
+            -N -L 5432:localhost:5432 \
+            root@185.219.41.49 &
+          sleep 5
+          echo "SSH tunnel started"
+
       - name: Run scraper
         working-directory: parser
         run: python3 scraper_china.py ${{ github.event.inputs.mode }}
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: "postgresql+asyncpg://postgres:encar@localhost:5432/encar"
           CHINA_PAGE_SIZE: "10"
           CHINA_NAV_TIMEOUT: "60000"
           CHINA_EXTRA_WAIT_MS: "5000"
