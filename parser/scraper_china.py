@@ -314,55 +314,83 @@ async def _fetch_page_direct(page_num: int) -> list[dict]:
 
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """
-    Fetch car listings for page N.
-    Strategy: try direct API first, fall back to Playwright HTML parsing.
+    Fetch car listings for page N via Playwright XHR interception.
+
+    che168.com is a React Native Web SPA — the HTML always contains the same
+    ~20 SSR "featured" cards regardless of ?pagerIndex. The real paginated data
+    is loaded via XHR AFTER React hydration. We must intercept that XHR response.
     """
-    # 1. Try direct API call (fast, no browser needed)
+    # 1. Try direct API call (fast, usually blocked by WAF)
     cars = await _fetch_page_direct(page_num)
     if cars:
         return cars
 
-    log.info(f"Page {page_num}: direct API returned 0, falling back to Playwright HTML")
+    log.info(f"Page {page_num}: direct API failed, using Playwright XHR capture")
 
-    # 2. Fall back to Playwright — parse HTML even if navigation times out
     page = await context.new_page()
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
-    nav_ok = False
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        nav_ok = True
-    except Exception as e:
-        log.warning(f"Page {page_num} navigation timeout (will still try HTML): {e}")
+
+    # Collect XHR responses containing car listing data
+    captured: list[dict] = []
+
+    async def on_response(response):
+        if "che168.com" not in response.url:
+            return
+        if response.status != 200:
+            return
+        try:
+            body = await response.body()
+            # WAF block page is ~29181 bytes; real API JSON is 1–80KB
+            if len(body) < 500 or len(body) > 200_000:
+                return
+            data = json.loads(body)
+            items = _extract_items(data)
+            if items:
+                log.info(f"Page {page_num}: XHR from {response.url} → {len(items)} items")
+                captured.extend(items)
+        except Exception:
+            pass
+
+    page.on("response", on_response)
 
     try:
-        await page.wait_for_timeout(2000)
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        except Exception as e:
+            log.warning(f"Page {page_num} nav timeout (continuing): {e}")
 
-        # Close "Detected Overseas Access" popup if present
+        await page.wait_for_timeout(1500)
+
+        # Dismiss "Detected Overseas Access" popup
         try:
             for sel in ["text=Continue to Chinese Site", "text=继续访问中国站"]:
                 btn = await page.query_selector(sel)
                 if btn:
                     await btn.click()
-                    log.info(f"Page {page_num}: closed overseas popup")
-                    await page.wait_for_timeout(1000)
+                    log.info(f"Page {page_num}: dismissed overseas popup")
+                    await page.wait_for_timeout(800)
                     break
         except Exception:
             pass
 
+        # Scroll to trigger lazy-loaded XHR
         await page.evaluate("window.scrollTo(0, 600)")
         await page.wait_for_timeout(2000)
         await page.evaluate("window.scrollTo(0, 1200)")
         await page.wait_for_timeout(EXTRA_WAIT_MS)
 
-        html = await page.content()
-        cars = parse_html_cars(html)
-        log.info(f"Page {page_num}: parsed {len(cars)} cars from HTML (nav_ok={nav_ok})")
-        return cars
     except Exception as e:
-        log.warning(f"Page {page_num} HTML parse error: {e}")
-        return []
+        log.warning(f"Page {page_num} interaction error: {e}")
     finally:
         await page.close()
+
+    if captured:
+        mapped = [m for item in captured if (m := map_china_car(item))]
+        log.info(f"Page {page_num}: {len(mapped)} cars from XHR")
+        return mapped
+
+    log.warning(f"Page {page_num}: no XHR car data captured")
+    return []
 
 
 def parse_html_cars(html: str) -> list[dict]:
@@ -650,19 +678,23 @@ def _flush_json():
 # ── Sync modes ─────────────────────────────────────────────────────────────────
 
 async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
-    """Fetch pages start_page..end_page, parse HTML, save cars. Returns pages done."""
+    """Fetch pages start_page..end_page via XHR interception, save cars. Returns pages done."""
     done = 0
+    consecutive_empty = 0
     for page_num in range(start_page, end_page + 1):
-        cars_raw = await _fetch_page(context, page_num)
-        if not cars_raw:
-            log.info(f"{label}Page {page_num}: empty — stopping")
-            break
-        mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
-        if mapped:
-            await _save_cars(mapped)
+        # _fetch_page now returns already-mapped Car dicts (from XHR API)
+        cars = await _fetch_page(context, page_num)
+        if not cars:
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                log.info(f"{label}Page {page_num}: {consecutive_empty} consecutive empty pages — stopping")
+                break
+            continue
+        consecutive_empty = 0
+        await _save_cars(cars)
         done += 1
-        if page_num % 20 == 0:
-            log.info(f"{label}Progress: {page_num} pages done")
+        if page_num % 10 == 0:
+            log.info(f"{label}Progress: {page_num} pages done, total buffered: {len(_json_buffer)}")
     return done
 
 
@@ -686,14 +718,18 @@ async def run_full_sync():
         browser, context = await _make_browser_context(pw)
         try:
             page_num = start_page
+            consecutive_empty = 0
             while True:
-                cars_raw = await _fetch_page(context, page_num)
-                if not cars_raw:
-                    log.info(f"Page {page_num}: empty — full sync done")
-                    break
-                mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
-                if mapped:
-                    await _save_cars(mapped)
+                cars = await _fetch_page(context, page_num)
+                if not cars:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 3:
+                        log.info(f"Page {page_num}: 3 consecutive empty — full sync done")
+                        break
+                    page_num += 1
+                    continue
+                consecutive_empty = 0
+                await _save_cars(cars)
                 _save_checkpoint({"last_page": page_num})
                 if page_num % 20 == 0:
                     log.info(f"Full sync progress: {page_num} pages")
