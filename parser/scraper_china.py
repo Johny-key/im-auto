@@ -270,32 +270,85 @@ async def _make_browser_context(playwright):
     return browser, context
 
 
+CHE168_DIRECT_API = "https://api2scsou.che168.com/api/v11/search"
+_DIRECT_API_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 12; Pixel 6) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://m.che168.com/",
+    "Origin": "https://m.che168.com",
+}
+
+
+async def _fetch_page_direct(page_num: int) -> list[dict]:
+    """Try fetching car list via direct httpx call to the API."""
+    import httpx
+    params = {
+        "pagerIndex": page_num,
+        "pagerSize": PAGE_SIZE,
+        "pvareaid": "20220",
+        "frompage": "5",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=_DIRECT_API_HEADERS) as client:
+            r = await client.get(CHE168_DIRECT_API, params=params)
+            log.info(f"Direct API page {page_num}: HTTP {r.status_code} {len(r.content)}b")
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            rc = data.get("returncode", -1)
+            if rc != 0:
+                log.warning(f"Direct API page {page_num}: returncode={rc} msg={data.get('message','')}")
+                return []
+            items = _extract_items(data)
+            log.info(f"Direct API page {page_num}: {len(items)} items")
+            return [m for item in items if (m := map_china_car(item))]
+    except Exception as e:
+        log.warning(f"Direct API page {page_num} error: {e}")
+        return []
+
+
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """
-    Open listing page N, close the 'Overseas Access' popup, and parse car cards from HTML.
-
-    Returns a list of raw car dicts ready for map_china_car_html().
+    Fetch car listings for page N.
+    Strategy: try direct API first, fall back to Playwright HTML parsing.
     """
+    # 1. Try direct API call (fast, no browser needed)
+    cars = await _fetch_page_direct(page_num)
+    if cars:
+        return cars
+
+    log.info(f"Page {page_num}: direct API returned 0, falling back to Playwright HTML")
+
+    # 2. Fall back to Playwright — parse HTML even if navigation times out
     page = await context.new_page()
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
+    nav_ok = False
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        nav_ok = True
+    except Exception as e:
+        log.warning(f"Page {page_num} navigation timeout (will still try HTML): {e}")
+
+    try:
         await page.wait_for_timeout(2000)
 
         # Close "Detected Overseas Access" popup if present
         try:
-            # Button text: "继续访问中国站" or "Continue to Chinese Site"
-            popup_btn = await page.query_selector("text=Continue to Chinese Site")
-            if not popup_btn:
-                popup_btn = await page.query_selector("text=继续访问中国站")
-            if popup_btn:
-                await popup_btn.click()
-                log.info(f"Page {page_num}: closed overseas popup")
-                await page.wait_for_timeout(1000)
-        except Exception as e:
-            log.debug(f"Page {page_num}: popup close attempt: {e}")
+            for sel in ["text=Continue to Chinese Site", "text=继续访问中国站"]:
+                btn = await page.query_selector(sel)
+                if btn:
+                    await btn.click()
+                    log.info(f"Page {page_num}: closed overseas popup")
+                    await page.wait_for_timeout(1000)
+                    break
+        except Exception:
+            pass
 
-        # Scroll to load all cards
         await page.evaluate("window.scrollTo(0, 600)")
         await page.wait_for_timeout(2000)
         await page.evaluate("window.scrollTo(0, 1200)")
@@ -303,10 +356,10 @@ async def _fetch_page(context, page_num: int) -> list[dict]:
 
         html = await page.content()
         cars = parse_html_cars(html)
-        log.info(f"Page {page_num}: parsed {len(cars)} cars from HTML")
+        log.info(f"Page {page_num}: parsed {len(cars)} cars from HTML (nav_ok={nav_ok})")
         return cars
     except Exception as e:
-        log.warning(f"Page {page_num} navigation error: {e}")
+        log.warning(f"Page {page_num} HTML parse error: {e}")
         return []
     finally:
         await page.close()
