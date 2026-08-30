@@ -276,23 +276,31 @@ async def _fetch_page(context, page_num: int) -> dict | None:
     """
     page = await context.new_page()
     captured: list[dict] = []
+    all_xhr_urls: list[str] = []
 
     def _on_response(response):
-        if CHE168_API_PATTERN in response.url and response.status == 200:
-            # Store the response object; await it after page settles
-            captured.append(response)
+        ct = response.headers.get("content-type", "")
+        if "json" in ct and response.status == 200:
+            all_xhr_urls.append(response.url)
+            if CHE168_API_PATTERN in response.url or "che168" in response.url:
+                captured.append(response)
 
     page.on("response", _on_response)
 
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
     try:
-        await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT)
-        # Extra wait: some XHR fires after networkidle
+        await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        # Extra wait for XHR to fire after DOM load
         await page.wait_for_timeout(EXTRA_WAIT_MS)
     except Exception as e:
         log.warning(f"Page {page_num} navigation error: {e}")
     finally:
         page.remove_listener("response", _on_response)
+
+    if all_xhr_urls:
+        log.info(f"Page {page_num}: captured JSON XHR URLs: {all_xhr_urls[:10]}")
+    else:
+        log.warning(f"Page {page_num}: no JSON XHR captured at all")
 
     result = None
     for resp in captured:
