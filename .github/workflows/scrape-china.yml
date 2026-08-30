@@ -1,0 +1,49 @@
+name: Scrape China (che168.com)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scrape mode'
+        required: true
+        default: 'incremental'
+        type: choice
+        options:
+          - incremental
+          - full
+          - dump
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: parser
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Run scraper
+        working-directory: parser
+        run: python3 scraper_china.py ${{ github.event.inputs.mode }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CHINA_PAGE_SIZE: "10"
+          CHINA_NAV_TIMEOUT: "90000"
+          CHINA_EXTRA_WAIT_MS: "5000"
+          CHINA_INCREMENTAL_PAGES: "100"
+          CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
