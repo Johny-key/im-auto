@@ -52,6 +52,18 @@ jobs:
         run: |
           SSH_OPTS="-o StrictHostKeyChecking=no -o PasswordAuthentication=yes -o PubkeyAuthentication=no"
 
+          # Check if JSON was created and has cars
+          if [ ! -f /tmp/china_cars.json ]; then
+            echo "ERROR: /tmp/china_cars.json not created by scraper"
+            exit 1
+          fi
+          CAR_COUNT=$(python3 -c "import json; d=json.load(open('/tmp/china_cars.json')); print(len(d))")
+          echo "Cars in JSON: $CAR_COUNT"
+          if [ "$CAR_COUNT" = "0" ]; then
+            echo "No cars scraped, skipping import"
+            exit 0
+          fi
+
           # Copy scraped data to VPS
           sshpass -p "${{ secrets.SSH_PASSWORD }}" scp $SSH_OPTS \
             /tmp/china_cars.json \

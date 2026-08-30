@@ -637,8 +637,9 @@ async def _save_cars(mapped: list[dict]):
 
 def _flush_json():
     """Write buffered cars to OUTPUT_JSON file."""
-    if not OUTPUT_JSON or not _json_buffer:
+    if not OUTPUT_JSON:
         return
+    log.info(f"Flushing {len(_json_buffer)} cars to {OUTPUT_JSON}")
     Path(OUTPUT_JSON).write_text(
         json.dumps(_json_buffer, ensure_ascii=False, default=str, indent=2),
         encoding="utf-8",
