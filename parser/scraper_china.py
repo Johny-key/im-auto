@@ -312,85 +312,98 @@ async def _fetch_page_direct(page_num: int) -> list[dict]:
         return []
 
 
-async def _fetch_page(context, page_num: int) -> list[dict]:
+async def _establish_session(context) -> "playwright.async_api.Page":
     """
-    Fetch car listings for page N via Playwright XHR interception.
+    Open m.che168.com once to set cookies, dismiss overseas popup, then keep
+    the tab open.  Returns the Page so callers can reuse it for JS fetches.
+    """
+    from playwright.async_api import Page
+    page: Page = await context.new_page()
+    try:
+        await page.goto(CHE168_LIST_BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    except Exception as e:
+        log.warning(f"Session page nav timeout (continuing): {e}")
 
-    che168.com is a React Native Web SPA — the HTML always contains the same
-    ~20 SSR "featured" cards regardless of ?pagerIndex. The real paginated data
-    is loaded via XHR AFTER React hydration. We must intercept that XHR response.
+    await page.wait_for_timeout(3000)
+
+    # Dismiss overseas popup
+    try:
+        for sel in ["text=Continue to Chinese Site", "text=继续访问中国站"]:
+            btn = await page.query_selector(sel)
+            if btn:
+                await btn.click()
+                log.info("Session: dismissed overseas popup")
+                await page.wait_for_timeout(1500)
+                break
+    except Exception:
+        pass
+
+    await page.wait_for_timeout(3000)   # Let cookies settle
+    return page
+
+
+async def _fetch_page_via_js(page, page_num: int) -> list[dict]:
     """
-    # 1. Try direct API call (fast, usually blocked by WAF)
+    Call the che168 search API from inside the browser context via page.evaluate().
+
+    The browser already has the right cookies/headers from _establish_session().
+    This bypasses the CDN WAF (which blocks httpx but allows browser requests)
+    while avoiding the cost of a full page reload per page number.
+    """
+    js = """
+    async ([url]) => {
+        try {
+            const r = await fetch(url, {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'zh-CN,zh;q=0.9',
+                    'Referer': 'https://m.che168.com/',
+                    'Origin': 'https://m.che168.com'
+                }
+            });
+            return await r.text();
+        } catch(e) {
+            return JSON.stringify({_js_error: e.message});
+        }
+    }
+    """
+    params = (
+        f"pagerIndex={page_num}&pagerSize={PAGE_SIZE}"
+        f"&pvareaid=20220&frompage=5"
+    )
+    url = f"{CHE168_DIRECT_API}?{params}"
+    try:
+        text = await page.evaluate(js, [url])
+        if not text:
+            return []
+        data = json.loads(text)
+        if "_js_error" in data:
+            log.warning(f"Page {page_num} JS fetch error: {data['_js_error']}")
+            return []
+        rc = data.get("returncode", -1)
+        if rc != 0:
+            log.warning(f"Page {page_num} JS fetch returncode={rc}: {data.get('message','')}")
+            return []
+        items = _extract_items(data)
+        log.info(f"Page {page_num}: JS fetch → {len(items)} items")
+        return [m for item in items if (m := map_china_car(item))]
+    except Exception as e:
+        log.warning(f"Page {page_num} JS fetch exception: {e}")
+        return []
+
+
+async def _fetch_page(context, page_num: int) -> list[dict]:
+    """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
     cars = await _fetch_page_direct(page_num)
     if cars:
         return cars
-
-    log.info(f"Page {page_num}: direct API failed, using Playwright XHR capture")
-
-    page = await context.new_page()
-    url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
-
-    # Collect XHR responses containing car listing data
-    captured: list[dict] = []
-
-    async def on_response(response):
-        if "che168.com" not in response.url:
-            return
-        if response.status != 200:
-            return
-        try:
-            body = await response.body()
-            # WAF block page is ~29181 bytes; real API JSON is 1–80KB
-            if len(body) < 500 or len(body) > 200_000:
-                return
-            data = json.loads(body)
-            items = _extract_items(data)
-            if items:
-                log.info(f"Page {page_num}: XHR from {response.url} → {len(items)} items")
-                captured.extend(items)
-        except Exception:
-            pass
-
-    page.on("response", on_response)
-
+    # Fallback: open a fresh tab, establish session, try JS fetch
+    page = await _establish_session(context)
     try:
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        except Exception as e:
-            log.warning(f"Page {page_num} nav timeout (continuing): {e}")
-
-        await page.wait_for_timeout(1500)
-
-        # Dismiss "Detected Overseas Access" popup
-        try:
-            for sel in ["text=Continue to Chinese Site", "text=继续访问中国站"]:
-                btn = await page.query_selector(sel)
-                if btn:
-                    await btn.click()
-                    log.info(f"Page {page_num}: dismissed overseas popup")
-                    await page.wait_for_timeout(800)
-                    break
-        except Exception:
-            pass
-
-        # Scroll to trigger lazy-loaded XHR
-        await page.evaluate("window.scrollTo(0, 600)")
-        await page.wait_for_timeout(2000)
-        await page.evaluate("window.scrollTo(0, 1200)")
-        await page.wait_for_timeout(EXTRA_WAIT_MS)
-
-    except Exception as e:
-        log.warning(f"Page {page_num} interaction error: {e}")
+        return await _fetch_page_via_js(page, page_num)
     finally:
         await page.close()
-
-    if captured:
-        mapped = [m for item in captured if (m := map_china_car(item))]
-        log.info(f"Page {page_num}: {len(mapped)} cars from XHR")
-        return mapped
-
-    log.warning(f"Page {page_num}: no XHR car data captured")
-    return []
 
 
 def parse_html_cars(html: str) -> list[dict]:
@@ -678,23 +691,39 @@ def _flush_json():
 # ── Sync modes ─────────────────────────────────────────────────────────────────
 
 async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
-    """Fetch pages start_page..end_page via XHR interception, save cars. Returns pages done."""
+    """
+    Fetch pages start_page..end_page.
+
+    Strategy:
+      1. Open one browser tab, load che168, dismiss popup (establishes cookies).
+      2. For each page, call the API via page.evaluate() JS fetch — fast, no
+         extra page loads, and bypasses WAF because cookies are already set.
+    """
+    # Establish session once
+    session_page = await _establish_session(context)
+    log.info(f"{label}Session established, starting page loop {start_page}–{end_page}")
+
     done = 0
     consecutive_empty = 0
-    for page_num in range(start_page, end_page + 1):
-        # _fetch_page now returns already-mapped Car dicts (from XHR API)
-        cars = await _fetch_page(context, page_num)
-        if not cars:
-            consecutive_empty += 1
-            if consecutive_empty >= 3:
-                log.info(f"{label}Page {page_num}: {consecutive_empty} consecutive empty pages — stopping")
-                break
-            continue
-        consecutive_empty = 0
-        await _save_cars(cars)
-        done += 1
-        if page_num % 10 == 0:
-            log.info(f"{label}Progress: {page_num} pages done, total buffered: {len(_json_buffer)}")
+    try:
+        for page_num in range(start_page, end_page + 1):
+            cars = await _fetch_page_via_js(session_page, page_num)
+            if not cars:
+                consecutive_empty += 1
+                if consecutive_empty >= 5:
+                    log.info(f"{label}5 consecutive empty pages at {page_num} — stopping")
+                    break
+                await session_page.wait_for_timeout(1000)
+                continue
+            consecutive_empty = 0
+            await _save_cars(cars)
+            done += 1
+            if page_num % 10 == 0:
+                log.info(f"{label}Progress: page {page_num}, buffered {len(_json_buffer)} cars")
+            await session_page.wait_for_timeout(500)   # polite delay
+    finally:
+        await session_page.close()
+
     return done
 
 
@@ -717,23 +746,28 @@ async def run_full_sync():
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
         try:
+            session_page = await _establish_session(context)
             page_num = start_page
             consecutive_empty = 0
-            while True:
-                cars = await _fetch_page(context, page_num)
-                if not cars:
-                    consecutive_empty += 1
-                    if consecutive_empty >= 3:
-                        log.info(f"Page {page_num}: 3 consecutive empty — full sync done")
-                        break
+            try:
+                while True:
+                    cars = await _fetch_page_via_js(session_page, page_num)
+                    if not cars:
+                        consecutive_empty += 1
+                        if consecutive_empty >= 5:
+                            log.info(f"Page {page_num}: 5 consecutive empty — full sync done")
+                            break
+                        page_num += 1
+                        continue
+                    consecutive_empty = 0
+                    await _save_cars(cars)
+                    _save_checkpoint({"last_page": page_num})
+                    if page_num % 20 == 0:
+                        log.info(f"Full sync progress: {page_num} pages")
                     page_num += 1
-                    continue
-                consecutive_empty = 0
-                await _save_cars(cars)
-                _save_checkpoint({"last_page": page_num})
-                if page_num % 20 == 0:
-                    log.info(f"Full sync progress: {page_num} pages")
-                page_num += 1
+                    await session_page.wait_for_timeout(500)
+            finally:
+                await session_page.close()
         finally:
             await browser.close()
 
