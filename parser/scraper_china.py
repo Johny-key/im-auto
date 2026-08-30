@@ -638,29 +638,63 @@ async def run_dump(page_num: int):
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
         try:
-            # Take screenshot of what browser sees before waiting for XHR
+            # Diagnostic: log ALL network requests to find where car data comes from
             diag_page = await context.new_page()
+            all_requests: list[str] = []
+            all_responses: list[tuple] = []  # (status, url, content_type, size)
+
+            async def _diag_response(response):
+                ct = response.headers.get("content-type", "")
+                try:
+                    body = await response.body()
+                    size = len(body)
+                    # Log non-image, non-font responses
+                    if not any(x in ct for x in ["image", "font", "css"]):
+                        all_responses.append((response.status, response.url, ct, size, body[:300]))
+                except Exception:
+                    all_responses.append((response.status, response.url, ct, 0, b""))
+
+            diag_page.on("response", _diag_response)
+
             url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
-            log.info(f"Navigating to {url} for screenshot...")
+            log.info(f"Navigating to {url} for full diagnostic...")
             try:
                 await diag_page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                await diag_page.wait_for_timeout(4000)
+                await diag_page.wait_for_timeout(3000)
                 await diag_page.evaluate("window.scrollTo(0, 400)")
                 await diag_page.wait_for_timeout(3000)
                 title = await diag_page.title()
                 current_url = diag_page.url
-                log.info(f"Page title: {title!r}, URL: {current_url}")
+                log.info(f"Page title: {title!r}, redirected to: {current_url}")
+
                 screenshot_path = "/tmp/che168_screenshot.png"
                 await diag_page.screenshot(path=screenshot_path, full_page=True)
                 log.info(f"Screenshot saved to {screenshot_path}")
+
                 html = await diag_page.content()
                 html_path = "/tmp/che168_page.html"
                 Path(html_path).write_text(html, encoding="utf-8")
                 log.info(f"Full HTML saved to {html_path} ({len(html)} chars)")
-                print(f"\n--- Page HTML (first 3000 chars) ---\n{html[:3000]}\n---", file=sys.stderr)
+
+                # Print ALL non-asset responses
+                log.info(f"=== All non-asset network responses ({len(all_responses)}) ===")
+                for status, resp_url, ct, size, preview in all_responses:
+                    log.info(f"  [{status}] [{size}b] {resp_url[:100]}")
+                    if size > 0 and ("json" in ct or size < 5000):
+                        log.info(f"    preview: {preview[:150]}")
+
+                # Also check if HTML contains car data (search for price patterns)
+                import re as _re
+                prices = _re.findall(r'"price"[:\s]*[\d.]+', html[:50000])
+                car_ids = _re.findall(r'"carid"[:\s]*[\d]+', html[:50000])
+                log.info(f"HTML contains 'price' fields: {len(prices)}, 'carid' fields: {len(car_ids)}")
+                if car_ids:
+                    log.info(f"Sample carid matches: {car_ids[:5]}")
+
             except Exception as e:
-                log.warning(f"Screenshot navigation error: {e}")
+                log.warning(f"Diagnostic navigation error: {e}")
             finally:
+                diag_page.remove_listener("response", _diag_response)
                 await diag_page.close()
 
             data = await _fetch_page(context, page_num)
