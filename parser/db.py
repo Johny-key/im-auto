@@ -7,7 +7,12 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/encar")
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+# When connecting via SSH tunnel (localhost), disable SSL explicitly
+_connect_args = {}
+if "localhost" in DATABASE_URL or "127.0.0.1" in DATABASE_URL:
+    _connect_args = {"ssl": False}
+
+engine = create_async_engine(DATABASE_URL, echo=False, connect_args=_connect_args)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
