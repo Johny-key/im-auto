@@ -27,13 +27,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y sshpass
+
       - name: Install dependencies
         working-directory: parser
         run: |
           pip install -r requirements.txt
-          pip install playwright sshpass
           playwright install chromium --with-deps
-          sudo apt-get install -y sshpass
 
       - name: Run scraper (save to JSON)
         working-directory: parser
