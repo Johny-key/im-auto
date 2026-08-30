@@ -270,73 +270,176 @@ async def _make_browser_context(playwright):
     return browser, context
 
 
-async def _fetch_page(context, page_num: int) -> dict | None:
+async def _fetch_page(context, page_num: int) -> list[dict]:
     """
-    Open listing page N in a new browser tab and capture the XHR API response.
+    Open listing page N, close the 'Overseas Access' popup, and parse car cards from HTML.
 
-    Returns the parsed JSON dict from che168's search API, or None on failure.
+    Returns a list of raw car dicts ready for map_china_car_html().
     """
     page = await context.new_page()
-    # Store (response_object, body_bytes) tuples for all JSON XHRs
-    captured_responses: list = []
-
-    async def _on_response(response):
-        ct = response.headers.get("content-type", "")
-        if "json" in ct and response.status == 200 and CHE168_API_PATTERN in response.url:
-            try:
-                body = await response.body()
-                captured_responses.append((response.url, body))
-            except Exception:
-                captured_responses.append((response.url, b""))
-
-    page.on("response", _on_response)
-
     url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        # Wait for initial JS to run
-        await page.wait_for_timeout(3000)
-        # Scroll down to trigger lazy-loaded car list XHR
-        await page.evaluate("window.scrollTo(0, 400)")
         await page.wait_for_timeout(2000)
-        await page.evaluate("window.scrollTo(0, 800)")
+
+        # Close "Detected Overseas Access" popup if present
+        try:
+            # Button text: "继续访问中国站" or "Continue to Chinese Site"
+            popup_btn = await page.query_selector("text=Continue to Chinese Site")
+            if not popup_btn:
+                popup_btn = await page.query_selector("text=继续访问中国站")
+            if popup_btn:
+                await popup_btn.click()
+                log.info(f"Page {page_num}: closed overseas popup")
+                await page.wait_for_timeout(1000)
+        except Exception as e:
+            log.debug(f"Page {page_num}: popup close attempt: {e}")
+
+        # Scroll to load all cards
+        await page.evaluate("window.scrollTo(0, 600)")
+        await page.wait_for_timeout(2000)
+        await page.evaluate("window.scrollTo(0, 1200)")
         await page.wait_for_timeout(EXTRA_WAIT_MS)
+
+        html = await page.content()
+        cars = parse_html_cars(html)
+        log.info(f"Page {page_num}: parsed {len(cars)} cars from HTML")
+        return cars
     except Exception as e:
         log.warning(f"Page {page_num} navigation error: {e}")
+        return []
     finally:
-        page.remove_listener("response", _on_response)
+        await page.close()
 
-    if captured_responses:
-        log.info(f"Page {page_num}: {len(captured_responses)} JSON XHRs from che168.com:")
-        for resp_url, body in captured_responses:
-            log.info(f"  [{len(body)}b] {resp_url[:120]}")
-            log.info(f"  preview: {body[:200]}")
-    else:
-        log.warning(f"Page {page_num}: no JSON XHR captured from che168.com")
 
-    result = None
-    for resp_url, body in captured_responses:
-        try:
-            data = json.loads(body)
-            if DEBUG_DUMP_DIR:
-                Path(DEBUG_DUMP_DIR).mkdir(parents=True, exist_ok=True)
-                dump_file = Path(DEBUG_DUMP_DIR) / f"page_{page_num}.json"
-                dump_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-            # Skip non-list responses (user info, search guide, etc.)
-            items = _extract_items(data)
-            if items:
-                result = data
-                log.info(f"Page {page_num}: found car list at {resp_url[:80]} ({len(items)} items)")
+def parse_html_cars(html: str) -> list[dict]:
+    """
+    Parse car listings from che168 mobile HTML (React Native Web / SSR).
+
+    Each car card is a div.r-1loqt21 containing text like:
+      "Brand Model YEAR年 / X.X万公里 / City ... PRICE 万 ..."
+    """
+    from bs4 import BeautifulSoup
+    import re as _re
+    import hashlib
+
+    soup = BeautifulSoup(html, "html.parser")
+    cards = soup.find_all("div", class_="r-1loqt21")
+
+    result = []
+    seen = set()
+    for card in cards:
+        text = " ".join(card.get_text(" ", strip=True).split())
+        # Must contain year and mileage pattern
+        m = _re.match(
+            r"^(.+?) (\d{4})年 / (\d+\.?\d*)万公里 / (\S+)",
+            text,
+        )
+        if not m:
+            continue
+        full_name, year_str, mileage_wan, city = m.groups()
+        # Price is the last "NUMBER 万" before any "首付" or end
+        price_text = text[m.end():]
+        pm = _re.search(r"(\d+\.?\d*)\s*万", price_text)
+        if not pm:
+            continue
+        price_wan = float(pm.group(1))
+
+        # Deduplicate by (name, year, price)
+        key = (full_name, year_str, price_wan)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Extract first photo
+        imgs = card.find_all("img")
+        photos = []
+        for img in imgs:
+            src = img.get("src", "")
+            if src and "autoimg.cn" in src and "escimg" in src:
+                if not src.startswith("http"):
+                    src = f"https:{src}"
+                photos.append(src)
                 break
-            rc = data.get("returncode", data.get("code", -1))
-            if rc == 0 and ("result" in data or "list" in data):
-                result = data
-                break
-        except Exception as e:
-            log.warning(f"Page {page_num}: failed to parse JSON from {resp_url[:60]}: {e}")
 
-    await page.close()
+        # Stable ID from name+year+price hash
+        raw_id = hashlib.md5(f"{full_name}_{year_str}_{price_wan}_{city}".encode()).hexdigest()[:12]
+
+        result.append({
+            "_full_name": full_name,
+            "_year": year_str,
+            "_mileage_wan": mileage_wan,
+            "_city": city,
+            "_price_wan": price_wan,
+            "_photos": photos,
+            "_id": raw_id,
+        })
+
     return result
+
+
+def map_china_car_html(raw: dict) -> dict | None:
+    """Map a parsed HTML car dict to our Car schema."""
+    try:
+        full_name = raw["_full_name"]
+        year = int(raw["_year"])
+        mileage = int(float(raw["_mileage_wan"]) * 10_000)
+        city = raw["_city"]
+        price_cny = raw["_price_wan"] * 10_000
+
+        # Separate brand from model using _BRAND_MAP
+        brand_en = None
+        brand_len = 0
+        for cn, en in _BRAND_MAP.items():
+            if full_name.startswith(cn) and len(cn) > brand_len:
+                brand_en = en
+                brand_len = len(cn)
+        model = full_name[brand_len:].strip() if brand_en else full_name
+
+        if not brand_en:
+            brand_en = full_name.split()[0] if full_name else "Unknown"
+
+        now = datetime.utcnow()
+        return {
+            "id":                  f"cn_{raw['_id']}",
+            "manufacturer":        brand_en,
+            "model":               model,
+            "badge":               None,
+            "badge_detail":        None,
+            "fuel_type":           None,
+            "year":                year,
+            "manufacture_month":   None,
+            "mileage":             mileage,
+            "price":               price_cny,
+            "office_city":         city,
+            "green_type":          False,
+            "photos":              raw["_photos"],
+            "photo_base":          None,
+            "condition":           None,
+            "trust":               None,
+            "service_mark":        None,
+            "buy_type":            None,
+            "sell_type":           None,
+            "service_copy_car":    None,
+            "engine_volume":       None,
+            "horsepower":          None,
+            "segment":             None,
+            "total_rub":           None,
+            "details_fetched":     False,
+            "is_available":        True,
+            "country":             "china",
+            "accident_cnt":        None,
+            "my_accident_cost":    None,
+            "other_accident_cost": None,
+            "owner_change_cnt":    None,
+            "flood_damage":        False,
+            "accident_fetched":    False,
+            "last_seen_at":        now,
+            "updated_at":          now,
+        }
+    except Exception as e:
+        log.warning(f"map_china_car_html error: {e} — raw={raw}")
+        return None
 
 
 def _extract_items(data: dict) -> list[dict]:
@@ -466,112 +569,77 @@ async def mark_unavailable():
 
 # ── Sync modes ─────────────────────────────────────────────────────────────────
 
+async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
+    """Fetch pages start_page..end_page, parse HTML, upsert to DB. Returns pages done."""
+    done = 0
+    for page_num in range(start_page, end_page + 1):
+        cars_raw = await _fetch_page(context, page_num)
+        if not cars_raw:
+            log.info(f"{label}Page {page_num}: empty — stopping")
+            break
+        mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
+        if mapped:
+            await upsert_cars(mapped)
+        done += 1
+        if page_num % 20 == 0:
+            log.info(f"{label}Progress: {page_num} pages done")
+    return done
+
+
 async def run_full_sync():
-    log.info("China full sync starting (Playwright)...")
+    log.info("China full sync starting (HTML parse)...")
     await init_db()
 
     cp = _load_checkpoint()
     start_page = cp.get("last_page", 0) + 1
-    total_pages = cp.get("total_pages", 0)
     if start_page > 1:
         log.info(f"Resuming from page {start_page} (checkpoint)")
 
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        log.error("Playwright not installed. Run: pip install playwright && playwright install chromium --with-deps")
+        log.error("Playwright not installed.")
         return
 
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
-
         try:
-            # Page 1: get total count
-            log.info(f"Fetching page {start_page}...")
-            first = await _fetch_page(context, start_page)
-            if not first:
-                log.error(
-                    "Failed to capture API response on page 1.\n"
-                    "Tips:\n"
-                    "  • Check CHE168_API_PATTERN matches the XHR URL in DevTools\n"
-                    "  • Set CHINA_DEBUG_DUMP_DIR=/tmp/che168 and inspect raw HTML\n"
-                    "  • Set CHINA_PROXY if the server IP is geo-blocked\n"
-                    "  • Try: python3 scraper_china.py dump 1"
-                )
-                return
-
-            if not total_pages:
-                total = _extract_total(first)
-                total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-                log.info(f"Total China cars: {total} → {total_pages} pages")
-                _save_checkpoint({"last_page": 0, "total_pages": total_pages})
-
-            items = _extract_items(first)
-            log.info(f"Page {start_page}: {len(items)} items")
-            if items:
-                mapped = [m for item in items if (m := map_china_car(item))]
-                if mapped:
-                    await upsert_cars(mapped)
-
-            _save_checkpoint({"last_page": start_page, "total_pages": total_pages})
-
-            for page_num in range(start_page + 1, total_pages + 1):
-                data = await _fetch_page(context, page_num)
-                if not data:
-                    log.warning(f"Page {page_num}: no response captured, skipping")
-                    continue
-
-                items = _extract_items(data)
-                if not items:
-                    log.info(f"Page {page_num}: empty — assuming end of results")
+            page_num = start_page
+            while True:
+                cars_raw = await _fetch_page(context, page_num)
+                if not cars_raw:
+                    log.info(f"Page {page_num}: empty — full sync done")
                     break
-
-                mapped = [m for item in items if (m := map_china_car(item))]
+                mapped = [m for r in cars_raw if (m := map_china_car_html(r))]
                 if mapped:
                     await upsert_cars(mapped)
-
-                _save_checkpoint({"last_page": page_num, "total_pages": total_pages})
-
-                if page_num % 50 == 0:
-                    log.info(f"Progress: {page_num}/{total_pages} pages")
-
+                _save_checkpoint({"last_page": page_num})
+                if page_num % 20 == 0:
+                    log.info(f"Full sync progress: {page_num} pages")
+                page_num += 1
         finally:
             await browser.close()
 
     await mark_unavailable()
     await enrich_segments()
-    # Clear checkpoint on successful completion
     _save_checkpoint({})
     log.info("China full sync complete")
 
 
 async def run_incremental_sync():
     """Fetch the N most recent pages only."""
-    log.info(f"China incremental sync starting ({INCREMENTAL_PAGES} pages)...")
+    log.info(f"China incremental sync starting ({INCREMENTAL_PAGES} pages, HTML parse)...")
 
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        log.error("Playwright not installed. Run: pip install playwright && playwright install chromium --with-deps")
+        log.error("Playwright not installed.")
         return
 
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
         try:
-            for page_num in range(1, INCREMENTAL_PAGES + 1):
-                data = await _fetch_page(context, page_num)
-                if not data:
-                    log.warning(f"Incremental page {page_num}: no response, stopping")
-                    break
-
-                items = _extract_items(data)
-                if not items:
-                    log.info(f"Incremental page {page_num}: empty, done")
-                    break
-
-                mapped = [m for item in items if (m := map_china_car(item))]
-                if mapped:
-                    await upsert_cars(mapped)
+            await _run_pages(context, 1, INCREMENTAL_PAGES, "Incremental ")
         finally:
             await browser.close()
 
@@ -697,22 +765,14 @@ async def run_dump(page_num: int):
                 diag_page.remove_listener("response", _diag_response)
                 await diag_page.close()
 
-            data = await _fetch_page(context, page_num)
-            if data:
-                print(json.dumps(data, ensure_ascii=False, indent=2))
-                items = _extract_items(data)
-                print(f"\n--- Extracted {len(items)} items ---", file=sys.stderr)
-                if items:
-                    print(f"First item keys: {list(items[0].keys())}", file=sys.stderr)
-                    mapped = map_china_car(items[0])
-                    print(f"Mapped: {json.dumps(mapped, ensure_ascii=False, default=str, indent=2)}", file=sys.stderr)
+            cars_raw = await _fetch_page(context, page_num)
+            print(f"\n--- Extracted {len(cars_raw)} cars from HTML ---", file=sys.stderr)
+            if cars_raw:
+                for i, raw in enumerate(cars_raw[:3]):
+                    mapped = map_china_car_html(raw)
+                    print(f"Car {i+1}: {json.dumps(mapped, ensure_ascii=False, default=str, indent=2)}", file=sys.stderr)
             else:
-                print("ERROR: No API response captured.", file=sys.stderr)
-                print(
-                    "The page loaded but no XHR was intercepted.\n"
-                    "Check connectivity test output above for geo-block status.",
-                    file=sys.stderr,
-                )
+                print("ERROR: No cars extracted from HTML.", file=sys.stderr)
         finally:
             await browser.close()
 
