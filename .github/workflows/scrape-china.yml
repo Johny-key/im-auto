@@ -82,4 +82,5 @@ jobs:
           path: |
             /tmp/che168_screenshot.png
             /tmp/che168_page.html
+            /tmp/che168_raw_response.json
           if-no-files-found: ignore
