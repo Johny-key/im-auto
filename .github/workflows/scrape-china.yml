@@ -12,10 +12,23 @@ on:
           - incremental
           - full
           - dump
+          - bulk
       variant:
-        description: 'List URL variant (0=default/recent, 1=price↑, 2=price↓, 3=mileage↑, 4=age↓)'
+        description: 'incremental: list URL variant (0=default, 1=price↑, 2=price↓, 3=mileage↑, 4=age↓)'
         required: false
         default: '0'
+      bulk_start:
+        description: 'bulk: first page to fetch (default 1)'
+        required: false
+        default: '1'
+      bulk_end:
+        description: 'bulk: last page to fetch (0 = all, ~24500 for full catalog)'
+        required: false
+        default: '0'
+      bulk_delay:
+        description: 'bulk: seconds between requests (default 0.5)'
+        required: false
+        default: '0.5'
 
 jobs:
   scrape:
@@ -69,6 +82,10 @@ jobs:
           CHINA_INCREMENTAL_PAGES: "100"
           CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
           CHINA_LIST_VARIANT: "${{ github.event.inputs.variant || '0' }}"
+          CHINA_BULK_START: "${{ github.event.inputs.bulk_start || '1' }}"
+          CHINA_BULK_END: "${{ github.event.inputs.bulk_end || '0' }}"
+          CHINA_BULK_DELAY: "${{ github.event.inputs.bulk_delay || '0.5' }}"
+          CHINA_BULK_PAGE_SIZE: "20"
 
       - name: Upload JSON to VPS and import
         if: github.event.inputs.mode != 'dump'

@@ -1339,6 +1339,134 @@ async def run_dump(page_num: int):
             await browser.close()
 
 
+_BULK_API_PARAMS_VARIANTS = [
+    # These are the parameter sets we try for direct httpx pagination.
+    # Some need signature, some might not — we test all.
+    {"pageindex": "{page}", "pagesize": "20", "ishideback": "1", "srecom": "0"},
+    {"pagerIndex": "{page}", "pagerSize": "20", "pvareaid": "20220", "frompage": "5"},
+]
+
+async def run_bulk_sync():
+    """
+    Bulk-import ALL che168 cars via direct httpx API pagination — no browser.
+
+    The che168 search API (api2scsou.che168.com/api/v11/search) returns valid
+    car JSON even without the _sign parameter when called with simple query
+    params and the right headers.  We paginate until empty or total_pages is
+    reached, saving every batch to the output JSON / DB.
+
+    Usage:
+      python3 scraper_china.py bulk [start_page] [end_page]
+      CHINA_BULK_START=1 CHINA_BULK_END=5000  # env override
+
+    Rate: 1 req/s ≈ 7,200 pages/h ≈ 144,000 cars/h
+    Full catalog (24,500 pages at pagesize=10): ~3.4 h
+    """
+    import httpx
+    import re as _re
+
+    start_page = int(os.getenv("CHINA_BULK_START", sys.argv[2] if len(sys.argv) > 2 else "1"))
+    end_page   = int(os.getenv("CHINA_BULK_END",   sys.argv[3] if len(sys.argv) > 3 else "0")) or None
+    delay      = float(os.getenv("CHINA_BULK_DELAY", "1.0"))  # seconds between requests
+    page_size  = int(os.getenv("CHINA_BULK_PAGE_SIZE", "20"))
+
+    log.info(f"Bulk sync: pages {start_page}–{end_page or 'all'}, pagesize={page_size}, delay={delay}s")
+    if not OUTPUT_JSON:
+        await init_db()
+
+    cp = _load_checkpoint()
+    if start_page == 1 and cp.get("last_bulk_page"):
+        start_page = cp["last_bulk_page"] + 1
+        log.info(f"Resuming from checkpoint page {start_page}")
+
+    # Find which param variant works
+    working_variant = None
+    async with httpx.AsyncClient(timeout=20, headers=_DIRECT_API_HEADERS,
+                                  follow_redirects=True) as client:
+        for variant in _BULK_API_PARAMS_VARIANTS:
+            params = {k: v.replace("{page}", "1") for k, v in variant.items()}
+            params["pagesize"] = str(page_size)
+            try:
+                r = await client.get(CHE168_DIRECT_API, params=params)
+                log.info(f"Variant test {variant}: HTTP {r.status_code} {len(r.content)}b")
+                if r.status_code == 200:
+                    data = r.json()
+                    rc = data.get("returncode", -1)
+                    items = _extract_items(data)
+                    total = data.get("result", {}).get("totalcount", 0)
+                    log.info(f"  returncode={rc}, items={len(items)}, total={total}")
+                    if rc == 0 and items:
+                        working_variant = dict(variant)
+                        working_variant["pagesize"] = str(page_size)
+                        log.info(f"  ✓ Working variant found: {working_variant}")
+                        # Save first page
+                        cars = [m for item in items if (m := map_china_car(item))]
+                        await _save_cars(cars)
+                        break
+                    else:
+                        log.warning(f"  msg: {data.get('message', '')[:80]}")
+            except Exception as e:
+                log.warning(f"  error: {e}")
+
+    if not working_variant:
+        log.error("No direct API variant works — signature required. Use browser modes instead.")
+        return
+
+    # Paginate
+    page_key = "pageindex" if "pageindex" in working_variant else "pagerIndex"
+    consecutive_empty = 0
+    page = max(start_page, 2)  # page 1 already fetched above
+
+    async with httpx.AsyncClient(timeout=20, headers=_DIRECT_API_HEADERS,
+                                  follow_redirects=True) as client:
+        while True:
+            if end_page and page > end_page:
+                break
+
+            params = {k: v.replace("{page}", str(page)) for k, v in working_variant.items()}
+            params[page_key] = str(page)
+
+            try:
+                r = await client.get(CHE168_DIRECT_API, params=params)
+                if r.status_code != 200:
+                    log.warning(f"Page {page}: HTTP {r.status_code}")
+                    consecutive_empty += 1
+                else:
+                    data = r.json()
+                    rc = data.get("returncode", -1)
+                    if rc == 0:
+                        items = _extract_items(data)
+                        if not items:
+                            consecutive_empty += 1
+                            log.info(f"Page {page}: empty — done")
+                        else:
+                            cars = [m for item in items if (m := map_china_car(item))]
+                            await _save_cars(cars)
+                            total = data.get("result", {}).get("totalcount", "?")
+                            consecutive_empty = 0
+                            _save_checkpoint({"last_bulk_page": page})
+                            if page % 100 == 0:
+                                log.info(f"Bulk progress: page {page}, cars={len(_json_buffer)}, total_available={total}")
+                    else:
+                        log.warning(f"Page {page}: returncode={rc} msg={data.get('message', '')}")
+                        consecutive_empty += 1
+            except Exception as e:
+                log.warning(f"Page {page}: {e}")
+                consecutive_empty += 1
+
+            if consecutive_empty >= 5:
+                log.info(f"5 consecutive failures at page {page} — stopping")
+                break
+
+            page += 1
+            await asyncio.sleep(delay)
+
+    _flush_json()
+    if not OUTPUT_JSON:
+        await enrich_segments()
+    log.info(f"Bulk sync complete, fetched through page {page - 1}")
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "incremental"
     if mode == "full":
@@ -1346,5 +1474,7 @@ if __name__ == "__main__":
     elif mode == "dump":
         page_num = int(sys.argv[2]) if len(sys.argv) > 2 else 1
         asyncio.run(run_dump(page_num))
+    elif mode == "bulk":
+        asyncio.run(run_bulk_sync())
     else:
         asyncio.run(run_incremental_sync())
