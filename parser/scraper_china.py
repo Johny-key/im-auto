@@ -197,13 +197,29 @@ def translate_fuel(raw: str) -> str:
 # ── Price calculation ──────────────────────────────────────────────────────────
 
 async def calc_total_rub(price_cny: float) -> tuple[str | None, int | None]:
+    """Legacy shim used by enrich_segments — delegates to calc_china_car_cost."""
+    from calculator import calc_china_car_cost
+
+    class _FakeCar:
+        price           = price_cny
+        fuel_type       = None
+        engine_volume   = None
+        horsepower      = None
+        year            = None
+        manufacture_month = None
+
     try:
-        rates = await get_cbr_rates()
-        cny_rub = rates.get("CNY", 0)
-        if not cny_rub:
-            return None, None
-        total = int(price_cny * cny_rub)
-        return get_segment(total), total
+        result = await calc_china_car_cost(_FakeCar())
+        total  = result.get("total_rub")
+        seg    = result.get("segment")
+        if total is None:
+            # fallback: just convert price at VTB rate
+            from calculator import get_vtb_cny_rate
+            rate  = await get_vtb_cny_rate()
+            total = int(price_cny * rate)
+            from calculator import get_segment
+            seg   = get_segment(total)
+        return seg, int(total)
     except Exception as e:
         log.warning(f"calc_total_rub error: {e}")
         return None, None

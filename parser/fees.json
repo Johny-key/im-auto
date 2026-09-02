@@ -1,5 +1,10 @@
 {
   "korea_fee_won": 2500000,
+
+  "china_expenses_cny":  15000,
+  "china_bank_commission": 0.02,
+  "china_autovoz_rub":   15000,
+
   "Эконом":  { "broker_fee": 0, "agent_fee": 0 },
   "Комфорт": { "broker_fee": 0, "agent_fee": 0 },
   "Бизнес":  { "broker_fee": 0, "agent_fee": 0 },

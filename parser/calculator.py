@@ -532,3 +532,134 @@ async def calc_car_cost(car) -> dict:
             "eur_rub": round(eur_rub, 2),
         },
     }
+
+
+# ── VTB CNY rate ───────────────────────────────────────────────────────────────
+
+_vtb_cache: dict = {}
+_vtb_cache_time: Optional[datetime] = None
+_VTB_CACHE_TTL = timedelta(hours=1)
+
+async def get_vtb_cny_rate() -> float:
+    """
+    Fetch VTB's CNY→RUB rate.  Falls back to CBR CNY × 1.03 if VTB is unreachable.
+    """
+    global _vtb_cache, _vtb_cache_time
+    now = datetime.utcnow()
+    if _vtb_cache_time and (now - _vtb_cache_time) < _VTB_CACHE_TTL:
+        return _vtb_cache.get("CNY", 0)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://www.vtb.ru/api/currency-exchange/current-rates/",
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+        # Response: list of {ISOCode, RateSell, RateBuy, ...}
+        for item in (data if isinstance(data, list) else data.get("rates", [])):
+            if item.get("ISOCode") == "CNY":
+                sell = float(item.get("RateSell", 0))
+                buy  = float(item.get("RateBuy",  0))
+                rate = sell or buy
+                if rate > 0:
+                    _vtb_cache = {"CNY": rate}
+                    _vtb_cache_time = now
+                    return rate
+    except Exception:
+        pass
+
+    # Fallback: CBR rate + 3 % markup
+    cbr = await get_cbr_rates()
+    rate = cbr.get("CNY", 0) * 1.03
+    _vtb_cache = {"CNY": rate}
+    _vtb_cache_time = now
+    return rate
+
+
+# ── China car cost calculator ──────────────────────────────────────────────────
+
+#  Константы, которые можно переопределить через fees.json
+_CHINA_EXPENSES_CNY  = 15_000   # расходы по Китаю (агент, местная доставка и т.д.)
+_CHINA_BANK_COMM     = 0.02     # комиссия банка 2 %
+_CHINA_AUTOVOZ_RUB   = 15_000   # автовоз — прячем в clearance + broker (по 7 500 каждый)
+
+
+async def calc_china_car_cost(car) -> dict:
+    """
+    Расчёт полной стоимости китайского авто (CNY → RUB).
+
+    Формула:
+      1. цена_cny + расходы_по_китаю(15 000 CNY)
+      2. × (1 + комиссия_банка 2 %)
+      3. × курс ВТБ CNY→RUB
+      4. → price_rub  (таможенная стоимость, переводим в EUR для пошлины)
+      5. + таможенная пошлина  (те же таблицы, что и Корея)
+      6. + таможенное оформление  (+7 500 скрытый автовоз)
+      7. + утильсбор
+      8. + брокер  (+7 500 скрытый автовоз)
+      9. = total_rub
+    """
+    fees = load_fees()
+    month = getattr(car, "manufacture_month", None)
+
+    vtb_cny_rub = await get_vtb_cny_rate()
+    cbr_rates   = await get_cbr_rates()
+    eur_rub     = cbr_rates.get("EUR", 0)
+
+    # Настройки из fees.json (с дефолтами)
+    china_exp   = fees.get("china_expenses_cny",  _CHINA_EXPENSES_CNY)
+    bank_comm   = fees.get("china_bank_commission", _CHINA_BANK_COMM)
+    autovoz     = fees.get("china_autovoz_rub",   _CHINA_AUTOVOZ_RUB)
+    autovoz_half = autovoz // 2   # прячем в clearance + broker
+
+    if car.price is not None and vtb_cny_rub > 0:
+        total_cny   = car.price + china_exp
+        price_rub   = round(total_cny * (1 + bank_comm) * vtb_cny_rub)
+
+        customs_value_eur = round(price_rub / eur_rub) if eur_rub else 0
+        duty              = calc_customs_duty(car.engine_volume, car.year,
+                                              customs_value_eur, eur_rub, month)
+        clearance         = calc_clearance_fee(price_rub)
+        seg_fees          = fees.get(get_segment(price_rub), {"broker_fee": 0, "agent_fee": 0})
+    else:
+        price_rub         = None
+        customs_value_eur = None
+        duty              = None
+        clearance         = None
+        seg_fees          = {"broker_fee": 0, "agent_fee": 0}
+        autovoz_half      = 0
+
+    utilshor   = calc_utilshor(car.fuel_type, car.engine_volume,
+                               car.horsepower, car.year, month)
+    broker_fee = seg_fees.get("broker_fee", 0) + autovoz_half
+    agent_fee  = seg_fees.get("agent_fee",  0)
+    clearance_eff = (clearance or 0) + autovoz_half
+
+    fixed = [price_rub, utilshor, duty, clearance_eff]
+    total = (
+        sum(fixed) + broker_fee + agent_fee
+        if all(v is not None for v in fixed)
+        else None
+    )
+
+    segment = get_segment(total) if total is not None else None
+
+    return {
+        "price_cny":            car.price,
+        "price_rub":            price_rub,
+        "customs_value_eur":    customs_value_eur,
+        "utilshor_rub":         utilshor,
+        "customs_duty_rub":     duty,
+        "customs_clearance_rub": clearance_eff,
+        "broker_fee_rub":       broker_fee,
+        "agent_fee_rub":        agent_fee,
+        "segment":              segment,
+        "total_rub":            total,
+        "exchange_rates": {
+            "cny_rub_vtb": round(vtb_cny_rub, 4),
+            "eur_rub":     round(eur_rub, 2),
+        },
+    }
