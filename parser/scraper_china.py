@@ -142,64 +142,104 @@ def map_china_car(data: dict) -> dict | None:
     API response shape is confirmed at runtime (see `dump` mode).
     """
     try:
-        car_id = str(_first(data, "carid", "carId", "CarId", "id") or "")
+        # che168 v11/search uses 'infoid' as car ID
+        car_id = str(_first(data, "infoid", "carid", "carId", "CarId", "id") or "")
         if not car_id:
             return None
 
-        brand_cn  = _first(data, "brandName", "BrandName", "brand", "Brand", default="")
-        model_raw = _first(data, "seriesName", "SeriesName", "series", "model", default="")
-        badge     = _first(data, "specName", "SpecName", "trimName", "spec", "Spec")
-        fuel_cn   = _first(data, "fuelType", "FuelType", "fuel", "Fuel", default="")
+        # Brand: pbname (brand name), carname (full name like "宝马 3系 2022款 330i")
+        brand_cn  = _first(data, "pbname", "brandName", "BrandName", "brand", "Brand", default="")
+        # Series/model name: syname (series), cname, seriesName
+        model_raw = _first(data, "syname", "cname", "seriesName", "SeriesName", "series", "model", default="")
+        # Spec/trim: sname
+        badge     = _first(data, "sname", "specName", "SpecName", "trimName", "spec", "Spec")
+
+        # Fuel type
+        fuel_cn   = _first(data, "fueltype", "fuelType", "FuelType", "fuel", "Fuel", default="")
         fuel      = translate_fuel(str(fuel_cn)) if fuel_cn else None
 
-        # Year/month: "202203" or "2022"
-        raw_year = str(_first(data, "registerDate", "RegisterDate", "year", "Year", default=""))
-        year  = int(raw_year[:4]) if len(raw_year) >= 4 else None
-        month = int(raw_year[4:6]) if len(raw_year) >= 6 else None
+        # Year/month: registeryear (int), or "202203" string
+        raw_year = str(_first(data, "registeryear", "registerDate", "RegisterDate", "year", "Year", default=""))
+        year  = int(raw_year[:4]) if len(raw_year) >= 4 and raw_year[:4].isdigit() else None
+        month = int(raw_year[4:6]) if len(raw_year) >= 6 and raw_year[4:6].isdigit() else None
 
-        # Mileage: might be int km, or "2.5万公里" string
+        # Mileage: might be int km, or "2.5万公里" string, or "2.5" (万km)
         raw_mileage = _first(data, "mileage", "Mileage", "licenseMileage", "LicenseMileage")
         mileage = None
         if raw_mileage is not None:
             s = str(raw_mileage).replace(",", "").strip()
-            if "万" in s:
-                mileage = int(float(s.replace("万公里", "").replace("万", "")) * 10_000)
-            else:
-                mileage = int(float(s.replace("公里", "").replace("km", ""))) if s else None
+            try:
+                if "万" in s:
+                    mileage = int(float(s.replace("万公里", "").replace("万", "")) * 10_000)
+                elif s.replace(".", "").isdigit():
+                    v = float(s)
+                    # che168 reports mileage in 万km (e.g. 3.2 = 32000 km)
+                    mileage = int(v * 10_000) if v < 200 else int(v)
+                else:
+                    mileage = int(float(s.replace("公里", "").replace("km", "")))
+            except ValueError:
+                pass
 
-        # Price in 万元 (10,000 CNY)
-        price_wan = _first(data, "price", "Price", "salePrice", "SalePrice")
-        price_cny = float(price_wan) * 10_000 if price_wan else None
+        # Price: price (万元), newprice, nowprice
+        price_wan = _first(data, "price", "newprice", "nowprice", "Price", "salePrice", "SalePrice")
+        price_cny = None
+        if price_wan is not None:
+            try:
+                v = float(str(price_wan).replace("万", "").replace(",", ""))
+                price_cny = v * 10_000 if v < 5000 else v  # already in CNY if > 5000
+            except ValueError:
+                pass
 
         # Engine
-        cc_raw = _first(data, "displacement", "Displacement", "cc", "engineVolume")
-        cc = int(float(str(cc_raw).replace("L", "").replace("l", "")) * 1000) if cc_raw else None
-        # Some APIs report displacement as liters (e.g. "1.6"), correct to cc
-        if cc and cc < 100:
-            cc = int(cc * 1000)
+        cc_raw = _first(data, "displacement", "Displacement", "cc", "engineVolume", "engine")
+        cc = None
+        if cc_raw:
+            try:
+                s = str(cc_raw).replace("L", "").replace("l", "").strip()
+                v = float(s)
+                cc = int(v * 1000) if v < 20 else int(v)  # <20 means liters
+            except ValueError:
+                pass
 
         hp_raw = _first(data, "power", "Power", "horsepower", "Horsepower", "hp", "Hp")
         hp = int(hp_raw) if hp_raw else None
 
-        # Photos
-        raw_photos = _first(data, "images", "Images", "photos", "Photos", "imgUrl", "ImgUrl", default=[])
+        # Photos: imglist (list), img (single), mainpicurl
+        raw_photos = _first(data, "imglist", "images", "Images", "photos", "Photos", default=[])
         if isinstance(raw_photos, str):
             raw_photos = [raw_photos]
         photos = [
             (p if p.startswith("http") else f"https:{p}")
-            for p in raw_photos if p
+            for p in (raw_photos or []) if p
         ]
-        # Some APIs return a single cover image string
-        cover = _first(data, "coverImage", "CoverImage", "mainImage", "MainImage")
+        cover = _first(data, "img", "mainpicurl", "coverImage", "CoverImage", "mainImage", "MainImage", "imgUrl")
         if cover and not photos:
             photos = [cover if cover.startswith("http") else f"https:{cover}"]
 
-        city = _first(data, "city", "City", "cityName", "CityName")
+        # City: cityname (string) or cityid (int)
+        city = _first(data, "cityname", "city", "City", "cityName", "CityName")
+        if not city:
+            city_id = _first(data, "cityid", "cityId")
+            city = str(city_id) if city_id else None
+
+        # If brand or model still empty, try to parse from carname
+        # carname example: "宝马 3系 2022款 330i M运动套装"
+        if not brand_cn or not model_raw:
+            carname = _first(data, "carname", "CarName", default="")
+            if carname:
+                parts = str(carname).split()
+                if not brand_cn and parts:
+                    brand_cn = parts[0]
+                if not model_raw and len(parts) > 1:
+                    model_raw = parts[1]
+
+        manufacturer = translate_brand(str(brand_cn)) if brand_cn else "Unknown"
+        model_str = str(model_raw) if model_raw else ""
 
         return {
             "id":                  f"cn_{car_id}",
-            "manufacturer":        translate_brand(str(brand_cn)),
-            "model":               str(model_raw),
+            "manufacturer":        manufacturer,
+            "model":               model_str,
             "badge":               badge,
             "badge_detail":        None,
             "fuel_type":           fuel,
@@ -365,7 +405,8 @@ async def _fetch_page_via_intercept(page, page_num: int) -> list[dict]:
                     total = result_obj.get("totalcount", "?")
                     actual_page = result_obj.get("pageindex", "?")
                     if items:
-                        log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total}), first item keys={list(items[0].keys())[:10]}")
+                        all_keys = list(items[0].keys())
+                        log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total}), first item keys={all_keys}")
                     else:
                         result_keys = list(result_obj.keys())
                         log.warning(f"Page {page_num}: 0 items! result keys={result_keys}, total={total}")
