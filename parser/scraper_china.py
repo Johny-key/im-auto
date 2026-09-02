@@ -382,103 +382,107 @@ async def _establish_session(context) -> "playwright.async_api.Page":
     return page
 
 
-async def _fetch_page_via_intercept(page, page_num: int, api_url_template: list) -> list[dict]:
+async def _fetch_page_via_intercept(page, page_num: int, _unused=None) -> list[dict]:
     """
-    Fetch page N from che168.
+    Fetch page N from che168 via XHR interception.
 
-    - page_num == 1: navigate to the listing URL, intercept the XHR response,
-      and store the request URL in api_url_template[0] for reuse.
-    - page_num > 1: reuse api_url_template[0] by replacing pageindex= param,
-      then fetch it via page.evaluate(fetch(...)) — avoids full page reload.
-
-    The mobile SPA ignores ?pageindex=N in the page URL and always loads p.1;
-    subsequent pages must be fetched directly through the API URL the app used.
+    - page_num == 1: navigate to listing URL, wait for XHR.
+    - page_num > 1: click the "next page" button so the SPA advances and fires
+      the XHR with the correct pageindex — no full reload, no CORS issues.
     """
-    import re as _re
-
     result: list[dict] = []
+    api_done = asyncio.Event()
 
-    def _parse_items(raw_bytes: bytes, page_num: int) -> list[dict]:
-        data = json.loads(raw_bytes)
-        rc = data.get("returncode", -1)
-        if rc != 0:
-            log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
-            return []
-        result_obj = data.get("result", {})
-        items = _extract_items(data)
-        total = result_obj.get("totalcount", "?")
-        actual_page = result_obj.get("pageindex", "?")
-        if items:
-            log.info(f"Page {page_num}: pageindex={actual_page} → {len(items)} items (total={total})")
-        else:
-            log.warning(f"Page {page_num}: 0 items, result keys={list(result_obj.keys())}, total={total}")
+    async def handle_response(response):
+        if "api/v11/search" in response.url and not api_done.is_set():
             try:
-                Path("/tmp/che168_raw_response.json").write_bytes(raw_bytes)
-            except Exception:
-                pass
-        return [m for item in items if (m := map_china_car(item))]
+                body = await response.body()
+                data = json.loads(body)
+                rc = data.get("returncode", -1)
+                if rc == 0:
+                    result_obj = data.get("result", {})
+                    items = _extract_items(data)
+                    total = result_obj.get("totalcount", "?")
+                    actual_page = result_obj.get("pageindex", "?")
+                    if items:
+                        log.info(f"Page {page_num}: pageindex={actual_page} → {len(items)} items (total={total})")
+                    else:
+                        log.warning(f"Page {page_num}: 0 items, result keys={list(result_obj.keys())}, total={total}")
+                        try:
+                            Path("/tmp/che168_raw_response.json").write_bytes(body)
+                        except Exception:
+                            pass
+                    result.extend([m for item in items if (m := map_china_car(item))])
+                else:
+                    log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
+            except Exception as e:
+                log.warning(f"Page {page_num}: intercept parse error: {e}")
+            finally:
+                api_done.set()
 
-    # ── Page 1: navigate + intercept ────────────────────────────────────────────
-    if page_num == 1 or not api_url_template:
-        api_done = asyncio.Event()
-        captured_req_url: list[str] = []
-        captured_body: list[bytes] = []
-
-        async def handle_response(response):
-            if "api/v11/search" in response.url and not api_done.is_set():
-                captured_req_url.append(response.url)
-                try:
-                    body = await response.body()
-                    captured_body.append(body)
-                except Exception as e:
-                    log.warning(f"Page 1: body read error: {e}")
-                finally:
-                    api_done.set()
-
-        page.on("response", handle_response)
-        try:
-            nav_url = f"{CHE168_LIST_BASE}?pageindex=1"
+    page.on("response", handle_response)
+    try:
+        if page_num == 1:
+            # First page: full navigation
             try:
-                await page.goto(nav_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+                await page.goto(CHE168_LIST_BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
             except Exception as e:
                 log.warning(f"Page 1: nav timeout (continuing): {e}")
-            try:
-                await asyncio.wait_for(api_done.wait(), timeout=15.0)
-            except asyncio.TimeoutError:
-                log.warning("Page 1: XHR not intercepted within 15s")
-        finally:
-            page.remove_listener("response", handle_response)
+        else:
+            # Subsequent pages: scroll down to reveal the "next" button, then click it
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(800)
 
-        if captured_req_url:
-            api_url_template.append(captured_req_url[0])
-            log.info(f"Captured API URL template: {captured_req_url[0][:120]}")
-        if captured_body:
-            result = _parse_items(captured_body[0], 1)
+            clicked = False
+            # Try various selectors for the "next page" control on che168 mobile
+            next_selectors = [
+                "text=下一页",
+                "[class*='next']:not([disabled])",
+                "[class*='Next']:not([disabled])",
+                "button:has-text('下')",
+                "a:has-text('下一页')",
+                "[aria-label='下一页']",
+                ".pagination-next",
+                ".page-next",
+            ]
+            for sel in next_selectors:
+                try:
+                    btn = await page.query_selector(sel)
+                    if btn:
+                        await btn.click()
+                        clicked = True
+                        log.debug(f"Page {page_num}: clicked '{sel}'")
+                        break
+                except Exception:
+                    continue
 
-        # If page_num was 1 but we were called for a later page (shouldn't happen),
-        # just return what we got for page 1.
-        return result
+            if not clicked:
+                # Fallback: look for a clickable element that looks like ">"
+                try:
+                    # Try JS: find any element whose text is a single > or »
+                    clicked = await page.evaluate("""() => {
+                        const candidates = [...document.querySelectorAll('*')].filter(el => {
+                            const t = (el.innerText || '').trim();
+                            return (t === '>' || t === '»' || t === '下一页' || t === 'Next') &&
+                                   el.offsetParent !== null;
+                        });
+                        if (candidates.length) { candidates[candidates.length-1].click(); return true; }
+                        return false;
+                    }""")
+                except Exception:
+                    pass
 
-    # ── Page 2+: replace pageindex in captured URL, fetch via JS ────────────────
-    base_url = api_url_template[0]
-    # Replace pageindex=<digits> with the target page number
-    api_url = _re.sub(r'pageindex=\d+', f'pageindex={page_num}', base_url)
-    if api_url == base_url:
-        # pageindex param wasn't found — append it
-        sep = "&" if "?" in api_url else "?"
-        api_url = f"{api_url}{sep}pageindex={page_num}"
+            if not clicked:
+                log.warning(f"Page {page_num}: could not find next-page button — stopping pagination")
+                api_done.set()
 
-    try:
-        raw = await page.evaluate(
-            """(url) => fetch(url, {credentials: 'include'})
-                         .then(r => r.arrayBuffer())
-                         .then(b => Array.from(new Uint8Array(b)))""",
-            api_url,
-        )
-        body_bytes = bytes(raw)
-        result = _parse_items(body_bytes, page_num)
-    except Exception as e:
-        log.warning(f"Page {page_num}: JS fetch error: {e}")
+        # Wait for XHR
+        try:
+            await asyncio.wait_for(api_done.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            log.warning(f"Page {page_num}: search API response not intercepted within 15s")
+    finally:
+        page.remove_listener("response", handle_response)
 
     return result
 
@@ -486,11 +490,12 @@ async def _fetch_page_via_intercept(page, page_num: int, api_url_template: list)
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
     page = await context.new_page()
-    api_url_template: list[str] = []
     try:
-        if page_num > 1:
-            await _fetch_page_via_intercept(page, 1, api_url_template)
-        return await _fetch_page_via_intercept(page, page_num, api_url_template)
+        # Must click through pages 1..(page_num-1) to reach page_num in the SPA
+        for p in range(1, page_num):
+            await _fetch_page_via_intercept(page, p)
+            await asyncio.sleep(0.3)
+        return await _fetch_page_via_intercept(page, page_num)
     finally:
         await page.close()
 
@@ -792,35 +797,34 @@ def _flush_json():
 
 async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
     """
-    Fetch pages start_page..end_page.
+    Fetch pages start_page..end_page by clicking "next page" within one browser tab.
 
     Strategy:
-      1. Navigate to page 1, intercept the XHR response, capture the API URL.
-      2. For pages 2+, replay the API URL via page.evaluate(fetch()) with
-         incremented pageindex — no full page reload needed, much faster.
+      1. Navigate to page 1, intercept XHR.
+      2. For each subsequent page click the "next page" button so the SPA fires
+         the XHR with the correct pageindex — no full page reload, no CORS issues.
     """
     page = await context.new_page()
-    log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept")
+    log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept + click")
 
-    # api_url_template[0] will hold the first-page API URL (populated by page 1 fetch)
-    api_url_template: list[str] = []
-
-    # If start_page > 1 we still need to load page 1 first to capture the URL
-    actual_start = start_page
+    # Must always start from page 1 (SPA can't deep-link to a page)
+    # If start_page > 1, we click through pages 1..(start_page-1) without saving
     if start_page > 1:
-        log.info(f"{label}start_page={start_page}: loading page 1 first to capture API URL")
-        await _fetch_page_via_intercept(page, 1, api_url_template)
-        # Don't save these — they belong to page 1, not our range
+        log.info(f"{label}Fast-forwarding to page {start_page} (clicking through {start_page-1} pages)...")
+        for p in range(1, start_page):
+            await _fetch_page_via_intercept(page, p)
+            await asyncio.sleep(0.3)
 
     done = 0
     consecutive_empty = 0
     try:
-        for page_num in range(actual_start, end_page + 1):
-            cars = await _fetch_page_via_intercept(page, page_num, api_url_template)
+        for page_num in range(start_page, end_page + 1):
+            page_idx = page_num  # actual SPA page = (start_page-1) clicks + current
+            cars = await _fetch_page_via_intercept(page, page_idx)
             if not cars:
                 consecutive_empty += 1
-                if consecutive_empty >= 5:
-                    log.info(f"{label}5 consecutive empty pages at {page_num} — stopping")
+                if consecutive_empty >= 3:
+                    log.info(f"{label}3 consecutive empty pages at {page_idx} — stopping")
                     break
                 continue
             consecutive_empty = 0
@@ -828,7 +832,7 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
             done += 1
             if page_num % 10 == 0:
                 log.info(f"{label}Progress: page {page_num}, buffered {len(_json_buffer)} cars")
-            await asyncio.sleep(0.3)   # polite delay
+            await asyncio.sleep(0.3)
     finally:
         await page.close()
 
