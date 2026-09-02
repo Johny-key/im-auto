@@ -12,6 +12,10 @@ on:
           - incremental
           - full
           - dump
+      variant:
+        description: 'List URL variant (0=default/recent, 1=price↑, 2=price↓, 3=mileage↑, 4=age↓)'
+        required: false
+        default: '0'
 
 jobs:
   scrape:
@@ -64,6 +68,7 @@ jobs:
           CHINA_EXTRA_WAIT_MS: "5000"
           CHINA_INCREMENTAL_PAGES: "100"
           CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
+          CHINA_LIST_VARIANT: "${{ github.event.inputs.variant || '0' }}"
 
       - name: Upload JSON to VPS and import
         if: github.event.inputs.mode != 'dump'

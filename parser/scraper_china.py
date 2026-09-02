@@ -44,8 +44,18 @@ log = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-# Mobile listing page — Playwright navigates here; the page internally calls the API
-CHE168_LIST_BASE   = "https://m.che168.com/china/list/"
+# Mobile listing page — Playwright navigates here; the page internally calls the API.
+# Can be overridden per-run to fetch different car subsets (the SPA limits each
+# session to ~48 pages / 480 cars; different URLs yield different listings).
+_CHINA_LIST_VARIANTS = [
+    "https://m.che168.com/china/list/",               # default (most recent)
+    "https://m.che168.com/china/list/?sortby=1",       # sort by price ↑
+    "https://m.che168.com/china/list/?sortby=2",       # sort by price ↓
+    "https://m.che168.com/china/list/?sortby=3",       # sort by mileage ↑
+    "https://m.che168.com/china/list/?sortby=4",       # sort by age ↓
+]
+_LIST_VARIANT_IDX   = int(os.getenv("CHINA_LIST_VARIANT", "0"))
+CHE168_LIST_BASE    = _CHINA_LIST_VARIANTS[_LIST_VARIANT_IDX % len(_CHINA_LIST_VARIANTS)]
 # Pattern to match in intercepted XHR responses — any che168 API subdomain
 # Old: api2scsou.che168.com/api/v11/search
 # New: apiiautoappsh.che168.com (discovered 2026-08-30 via XHR capture)
@@ -991,8 +1001,9 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
         # ── Pages 2+: scroll loop ────────────────────────────────────────────
         consecutive_empty = 0
         for target_page in range(2, end_page + 1):
-            # Wait for React to render list items from the previous XHR
-            await page.wait_for_timeout(5000)
+            # Wait for React to render list items from the previous XHR.
+            # 2 s is enough — dump showed page 2 XHR fires ~1 s after scroll.
+            await page.wait_for_timeout(2000)
 
             await _scroll_to_trigger_next_page(page, received, label=label)
 
