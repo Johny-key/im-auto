@@ -382,62 +382,103 @@ async def _establish_session(context) -> "playwright.async_api.Page":
     return page
 
 
-async def _fetch_page_via_intercept(page, page_num: int) -> list[dict]:
+async def _fetch_page_via_intercept(page, page_num: int, api_url_template: list) -> list[dict]:
     """
-    Navigate to che168 list page N and capture the XHR response the page makes
-    automatically to api/v11/search.
+    Fetch page N from che168.
 
-    The page's own React code constructs the correct signed URL with cookies —
-    we just intercept what comes back instead of trying to replay the request.
+    - page_num == 1: navigate to the listing URL, intercept the XHR response,
+      and store the request URL in api_url_template[0] for reuse.
+    - page_num > 1: reuse api_url_template[0] by replacing pageindex= param,
+      then fetch it via page.evaluate(fetch(...)) — avoids full page reload.
+
+    The mobile SPA ignores ?pageindex=N in the page URL and always loads p.1;
+    subsequent pages must be fetched directly through the API URL the app used.
     """
+    import re as _re
+
     result: list[dict] = []
-    api_done = asyncio.Event()
 
-    async def handle_response(response):
-        if "api/v11/search" in response.url and not api_done.is_set():
+    def _parse_items(raw_bytes: bytes, page_num: int) -> list[dict]:
+        data = json.loads(raw_bytes)
+        rc = data.get("returncode", -1)
+        if rc != 0:
+            log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
+            return []
+        result_obj = data.get("result", {})
+        items = _extract_items(data)
+        total = result_obj.get("totalcount", "?")
+        actual_page = result_obj.get("pageindex", "?")
+        if items:
+            log.info(f"Page {page_num}: pageindex={actual_page} → {len(items)} items (total={total})")
+        else:
+            log.warning(f"Page {page_num}: 0 items, result keys={list(result_obj.keys())}, total={total}")
             try:
-                body = await response.body()
-                data = json.loads(body)
-                rc = data.get("returncode", -1)
-                if rc == 0:
-                    result_obj = data.get("result", {})
-                    items = _extract_items(data)
-                    total = result_obj.get("totalcount", "?")
-                    actual_page = result_obj.get("pageindex", "?")
-                    if items:
-                        all_keys = list(items[0].keys())
-                        log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total}), first item keys={all_keys}")
-                    else:
-                        result_keys = list(result_obj.keys())
-                        log.warning(f"Page {page_num}: 0 items! result keys={result_keys}, total={total}")
-                        # Save raw JSON for inspection
-                        try:
-                            Path("/tmp/che168_raw_response.json").write_bytes(body)
-                            log.warning(f"Raw JSON saved to /tmp/che168_raw_response.json")
-                        except Exception:
-                            pass
-                    result.extend([m for item in items if (m := map_china_car(item))])
-                else:
-                    log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
-            except Exception as e:
-                log.warning(f"Page {page_num}: intercept parse error: {e}")
-            finally:
-                api_done.set()
+                Path("/tmp/che168_raw_response.json").write_bytes(raw_bytes)
+            except Exception:
+                pass
+        return [m for item in items if (m := map_china_car(item))]
 
-    page.on("response", handle_response)
+    # ── Page 1: navigate + intercept ────────────────────────────────────────────
+    if page_num == 1 or not api_url_template:
+        api_done = asyncio.Event()
+        captured_req_url: list[str] = []
+        captured_body: list[bytes] = []
+
+        async def handle_response(response):
+            if "api/v11/search" in response.url and not api_done.is_set():
+                captured_req_url.append(response.url)
+                try:
+                    body = await response.body()
+                    captured_body.append(body)
+                except Exception as e:
+                    log.warning(f"Page 1: body read error: {e}")
+                finally:
+                    api_done.set()
+
+        page.on("response", handle_response)
+        try:
+            nav_url = f"{CHE168_LIST_BASE}?pageindex=1"
+            try:
+                await page.goto(nav_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            except Exception as e:
+                log.warning(f"Page 1: nav timeout (continuing): {e}")
+            try:
+                await asyncio.wait_for(api_done.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                log.warning("Page 1: XHR not intercepted within 15s")
+        finally:
+            page.remove_listener("response", handle_response)
+
+        if captured_req_url:
+            api_url_template.append(captured_req_url[0])
+            log.info(f"Captured API URL template: {captured_req_url[0][:120]}")
+        if captured_body:
+            result = _parse_items(captured_body[0], 1)
+
+        # If page_num was 1 but we were called for a later page (shouldn't happen),
+        # just return what we got for page 1.
+        return result
+
+    # ── Page 2+: replace pageindex in captured URL, fetch via JS ────────────────
+    base_url = api_url_template[0]
+    # Replace pageindex=<digits> with the target page number
+    api_url = _re.sub(r'pageindex=\d+', f'pageindex={page_num}', base_url)
+    if api_url == base_url:
+        # pageindex param wasn't found — append it
+        sep = "&" if "?" in api_url else "?"
+        api_url = f"{api_url}{sep}pageindex={page_num}"
+
     try:
-        url = f"{CHE168_LIST_BASE}?pageindex={page_num}"
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        except Exception as e:
-            log.warning(f"Page {page_num}: nav timeout (continuing): {e}")
-        # Wait up to 15s for the search API response to arrive
-        try:
-            await asyncio.wait_for(api_done.wait(), timeout=15.0)
-        except asyncio.TimeoutError:
-            log.warning(f"Page {page_num}: search API response not intercepted within 15s")
-    finally:
-        page.remove_listener("response", handle_response)
+        raw = await page.evaluate(
+            """(url) => fetch(url, {credentials: 'include'})
+                         .then(r => r.arrayBuffer())
+                         .then(b => Array.from(new Uint8Array(b)))""",
+            api_url,
+        )
+        body_bytes = bytes(raw)
+        result = _parse_items(body_bytes, page_num)
+    except Exception as e:
+        log.warning(f"Page {page_num}: JS fetch error: {e}")
 
     return result
 
@@ -445,8 +486,11 @@ async def _fetch_page_via_intercept(page, page_num: int) -> list[dict]:
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
     page = await context.new_page()
+    api_url_template: list[str] = []
     try:
-        return await _fetch_page_via_intercept(page, page_num)
+        if page_num > 1:
+            await _fetch_page_via_intercept(page, 1, api_url_template)
+        return await _fetch_page_via_intercept(page, page_num, api_url_template)
     finally:
         await page.close()
 
@@ -751,19 +795,28 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
     Fetch pages start_page..end_page.
 
     Strategy:
-      1. Open one browser tab, load che168, dismiss popup (establishes cookies).
-      2. For each page, call the API via page.evaluate() JS fetch — fast, no
-         extra page loads, and bypasses WAF because cookies are already set.
+      1. Navigate to page 1, intercept the XHR response, capture the API URL.
+      2. For pages 2+, replay the API URL via page.evaluate(fetch()) with
+         incremented pageindex — no full page reload needed, much faster.
     """
-    # Reuse a single page across all fetches (cookies persist within context).
     page = await context.new_page()
     log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept")
+
+    # api_url_template[0] will hold the first-page API URL (populated by page 1 fetch)
+    api_url_template: list[str] = []
+
+    # If start_page > 1 we still need to load page 1 first to capture the URL
+    actual_start = start_page
+    if start_page > 1:
+        log.info(f"{label}start_page={start_page}: loading page 1 first to capture API URL")
+        await _fetch_page_via_intercept(page, 1, api_url_template)
+        # Don't save these — they belong to page 1, not our range
 
     done = 0
     consecutive_empty = 0
     try:
-        for page_num in range(start_page, end_page + 1):
-            cars = await _fetch_page_via_intercept(page, page_num)
+        for page_num in range(actual_start, end_page + 1):
+            cars = await _fetch_page_via_intercept(page, page_num, api_url_template)
             if not cars:
                 consecutive_empty += 1
                 if consecutive_empty >= 5:
@@ -775,7 +828,7 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
             done += 1
             if page_num % 10 == 0:
                 log.info(f"{label}Progress: page {page_num}, buffered {len(_json_buffer)} cars")
-            await asyncio.sleep(0.5)   # polite delay
+            await asyncio.sleep(0.3)   # polite delay
     finally:
         await page.close()
 
