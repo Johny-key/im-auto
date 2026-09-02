@@ -342,66 +342,61 @@ async def _establish_session(context) -> "playwright.async_api.Page":
     return page
 
 
-async def _fetch_page_via_js(page, page_num: int) -> list[dict]:
+async def _fetch_page_via_intercept(page, page_num: int) -> list[dict]:
     """
-    Call the che168 search API from inside the browser context via page.evaluate().
+    Navigate to che168 list page N and capture the XHR response the page makes
+    automatically to api/v11/search.
 
-    The browser already has the right cookies/headers from _establish_session().
-    This bypasses the CDN WAF (which blocks httpx but allows browser requests)
-    while avoiding the cost of a full page reload per page number.
+    The page's own React code constructs the correct signed URL with cookies —
+    we just intercept what comes back instead of trying to replay the request.
     """
-    js = """
-    async ([url]) => {
-        try {
-            const r = await fetch(url, {
-                credentials: 'include',
-                headers: {
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'zh-CN,zh;q=0.9',
-                    'Referer': 'https://m.che168.com/',
-                    'Origin': 'https://m.che168.com'
-                }
-            });
-            return await r.text();
-        } catch(e) {
-            return JSON.stringify({_js_error: e.message});
-        }
-    }
-    """
-    params = (
-        f"pagerIndex={page_num}&pagerSize={PAGE_SIZE}"
-        f"&pvareaid=20220&frompage=5"
-    )
-    url = f"{CHE168_DIRECT_API}?{params}"
+    result: list[dict] = []
+    api_done = asyncio.Event()
+
+    async def handle_response(response):
+        if "api/v11/search" in response.url and not api_done.is_set():
+            try:
+                body = await response.body()
+                data = json.loads(body)
+                rc = data.get("returncode", -1)
+                if rc == 0:
+                    items = _extract_items(data)
+                    total = data.get("result", {}).get("totalcount", "?")
+                    actual_page = data.get("result", {}).get("pageindex", "?")
+                    log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total})")
+                    if items:
+                        log.debug(f"Page {page_num}: first item keys: {list(items[0].keys())}")
+                    result.extend([m for item in items if (m := map_china_car(item))])
+                else:
+                    log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
+            except Exception as e:
+                log.warning(f"Page {page_num}: intercept parse error: {e}")
+            finally:
+                api_done.set()
+
+    page.on("response", handle_response)
     try:
-        text = await page.evaluate(js, [url])
-        if not text:
-            return []
-        data = json.loads(text)
-        if "_js_error" in data:
-            log.warning(f"Page {page_num} JS fetch error: {data['_js_error']}")
-            return []
-        rc = data.get("returncode", -1)
-        if rc != 0:
-            log.warning(f"Page {page_num} JS fetch returncode={rc}: {data.get('message','')}")
-            return []
-        items = _extract_items(data)
-        log.info(f"Page {page_num}: JS fetch → {len(items)} items")
-        return [m for item in items if (m := map_china_car(item))]
-    except Exception as e:
-        log.warning(f"Page {page_num} JS fetch exception: {e}")
-        return []
+        url = f"{CHE168_LIST_BASE}?pageindex={page_num}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        except Exception as e:
+            log.warning(f"Page {page_num}: nav timeout (continuing): {e}")
+        # Wait up to 15s for the search API response to arrive
+        try:
+            await asyncio.wait_for(api_done.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            log.warning(f"Page {page_num}: search API response not intercepted within 15s")
+    finally:
+        page.remove_listener("response", handle_response)
+
+    return result
 
 
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
-    cars = await _fetch_page_direct(page_num)
-    if cars:
-        return cars
-    # Fallback: open a fresh tab, establish session, try JS fetch
-    page = await _establish_session(context)
+    page = await context.new_page()
     try:
-        return await _fetch_page_via_js(page, page_num)
+        return await _fetch_page_via_intercept(page, page_num)
     finally:
         await page.close()
 
@@ -699,30 +694,29 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
       2. For each page, call the API via page.evaluate() JS fetch — fast, no
          extra page loads, and bypasses WAF because cookies are already set.
     """
-    # Establish session once
-    session_page = await _establish_session(context)
-    log.info(f"{label}Session established, starting page loop {start_page}–{end_page}")
+    # Reuse a single page across all fetches (cookies persist within context).
+    page = await context.new_page()
+    log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept")
 
     done = 0
     consecutive_empty = 0
     try:
         for page_num in range(start_page, end_page + 1):
-            cars = await _fetch_page_via_js(session_page, page_num)
+            cars = await _fetch_page_via_intercept(page, page_num)
             if not cars:
                 consecutive_empty += 1
                 if consecutive_empty >= 5:
                     log.info(f"{label}5 consecutive empty pages at {page_num} — stopping")
                     break
-                await session_page.wait_for_timeout(1000)
                 continue
             consecutive_empty = 0
             await _save_cars(cars)
             done += 1
             if page_num % 10 == 0:
                 log.info(f"{label}Progress: page {page_num}, buffered {len(_json_buffer)} cars")
-            await session_page.wait_for_timeout(500)   # polite delay
+            await asyncio.sleep(0.5)   # polite delay
     finally:
-        await session_page.close()
+        await page.close()
 
     return done
 
@@ -746,12 +740,12 @@ async def run_full_sync():
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
         try:
-            session_page = await _establish_session(context)
+            page = await context.new_page()
             page_num = start_page
             consecutive_empty = 0
             try:
                 while True:
-                    cars = await _fetch_page_via_js(session_page, page_num)
+                    cars = await _fetch_page_via_intercept(page, page_num)
                     if not cars:
                         consecutive_empty += 1
                         if consecutive_empty >= 5:
@@ -765,9 +759,9 @@ async def run_full_sync():
                     if page_num % 20 == 0:
                         log.info(f"Full sync progress: {page_num} pages")
                     page_num += 1
-                    await session_page.wait_for_timeout(500)
+                    await asyncio.sleep(0.5)
             finally:
-                await session_page.close()
+                await page.close()
         finally:
             await browser.close()
 
@@ -881,7 +875,7 @@ async def run_dump(page_num: int):
 
             diag_page.on("response", _diag_response)
 
-            url = f"{CHE168_LIST_BASE}?pagerIndex={page_num}"
+            url = f"{CHE168_LIST_BASE}?pageindex={page_num}"
             log.info(f"Navigating to {url} for full diagnostic...")
             try:
                 await diag_page.goto(url, wait_until="domcontentloaded", timeout=60_000)
@@ -922,14 +916,42 @@ async def run_dump(page_num: int):
                 diag_page.remove_listener("response", _diag_response)
                 await diag_page.close()
 
-            cars_raw = await _fetch_page(context, page_num)
-            print(f"\n--- Extracted {len(cars_raw)} cars from HTML ---", file=sys.stderr)
-            if cars_raw:
-                for i, raw in enumerate(cars_raw[:3]):
-                    mapped = map_china_car_html(raw)
-                    print(f"Car {i+1}: {json.dumps(mapped, ensure_ascii=False, default=str, indent=2)}", file=sys.stderr)
+            # Also show raw API item fields to debug field name mapping
+            raw_items_holder: list[dict] = []
+
+            async def _raw_capture(response):
+                if "api/v11/search" in response.url and not raw_items_holder:
+                    try:
+                        body = await response.body()
+                        data = json.loads(body)
+                        if data.get("returncode") == 0:
+                            items = _extract_items(data)
+                            raw_items_holder.extend(items[:3])
+                    except Exception:
+                        pass
+
+            diag_page2 = await context.new_page()
+            diag_page2.on("response", _raw_capture)
+            try:
+                await diag_page2.goto(f"{CHE168_LIST_BASE}?pageindex={page_num}", wait_until="domcontentloaded", timeout=60_000)
+                await asyncio.sleep(5)
+            except Exception:
+                pass
+            finally:
+                diag_page2.remove_listener("response", _raw_capture)
+                await diag_page2.close()
+
+            if raw_items_holder:
+                print(f"\n=== RAW API ITEM FIELDS (first item) ===", file=sys.stderr)
+                print(json.dumps(raw_items_holder[0], ensure_ascii=False, default=str, indent=2), file=sys.stderr)
+
+            cars_mapped = await _fetch_page(context, page_num)
+            print(f"\n--- Extracted {len(cars_mapped)} cars via XHR intercept ---", file=sys.stderr)
+            if cars_mapped:
+                for i, car in enumerate(cars_mapped[:3]):
+                    print(f"Car {i+1}: {json.dumps(car, ensure_ascii=False, default=str, indent=2)}", file=sys.stderr)
             else:
-                print("ERROR: No cars extracted from HTML.", file=sys.stderr)
+                print("ERROR: No cars extracted.", file=sys.stderr)
         finally:
             await browser.close()
 
