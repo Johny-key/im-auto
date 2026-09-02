@@ -429,10 +429,33 @@ async def _fetch_page_via_intercept(page, page_num: int, _unused=None) -> list[d
             except Exception as e:
                 log.warning(f"Page 1: nav timeout (continuing): {e}")
         else:
-            # Subsequent pages: scroll to bottom in small steps to trigger infinite-scroll observer
-            for _ in range(8):
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(400)
+            # Trigger infinite-scroll: scroll incrementally through possible containers
+            await page.evaluate("""() => {
+                // Collect all scrollable containers + window
+                const els = [document.documentElement, document.body,
+                              ...document.querySelectorAll('*')].filter(el => {
+                    try { return el && el.scrollHeight > el.clientHeight + 50; }
+                    catch { return false; }
+                });
+                for (const el of els) {
+                    try { el.scrollTop = el.scrollHeight; } catch {}
+                }
+                window.scrollTo(0, document.body.scrollHeight);
+            }""")
+            await page.wait_for_timeout(500)
+            # Incremental window scroll (300px steps) to walk IntersectionObserver sentinels into view
+            total_h = await page.evaluate("document.body.scrollHeight")
+            step = max(300, total_h // 20)
+            pos = 0
+            while pos < total_h:
+                pos = min(pos + step, total_h)
+                await page.evaluate(f"window.scrollTo(0, {pos})")
+                await page.wait_for_timeout(200)
+                if api_done.is_set():
+                    break
+            # Final hard scroll to absolute bottom
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(500)
 
         # Wait for XHR
         try:
