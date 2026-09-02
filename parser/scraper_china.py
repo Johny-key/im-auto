@@ -147,19 +147,19 @@ def map_china_car(data: dict) -> dict | None:
         if not car_id:
             return None
 
-        # Brand: pbname (brand name), carname (full name like "宝马 3系 2022款 330i")
+        # Brand: pbname (brand name) — if absent, parse from carname first word
         brand_cn  = _first(data, "pbname", "brandName", "BrandName", "brand", "Brand", default="")
-        # Series/model name: syname (series), cname, seriesName
-        model_raw = _first(data, "syname", "cname", "seriesName", "SeriesName", "series", "model", default="")
-        # Spec/trim: sname
+        # Series/model name: syname (series name). NOTE: cname = city name, NOT car model — excluded.
+        model_raw = _first(data, "syname", "seriesName", "SeriesName", "series", "model", default="")
+        # Spec/trim: sname (spec name like "40TFSI 风尚运动型")
         badge     = _first(data, "sname", "specName", "SpecName", "trimName", "spec", "Spec")
 
         # Fuel type
         fuel_cn   = _first(data, "fueltype", "fuelType", "FuelType", "fuel", "Fuel", default="")
         fuel      = translate_fuel(str(fuel_cn)) if fuel_cn else None
 
-        # Year/month: registeryear (int), or "202203" string
-        raw_year = str(_first(data, "registeryear", "registerDate", "RegisterDate", "year", "Year", default=""))
+        # Year: firstregyear (first registration year, int e.g. 2021)
+        raw_year = str(_first(data, "firstregyear", "registeryear", "registerDate", "RegisterDate", "year", "Year", default=""))
         year  = int(raw_year[:4]) if len(raw_year) >= 4 and raw_year[:4].isdigit() else None
         month = int(raw_year[4:6]) if len(raw_year) >= 6 and raw_year[4:6].isdigit() else None
 
@@ -204,7 +204,8 @@ def map_china_car(data: dict) -> dict | None:
         hp_raw = _first(data, "power", "Power", "horsepower", "Horsepower", "hp", "Hp")
         hp = int(hp_raw) if hp_raw else None
 
-        # Photos: imglist (list), img (single), mainpicurl
+        # Photos: imageurl (single cover), imglist (list)
+        cover = _first(data, "imageurl", "img", "mainpicurl", "coverImage", "CoverImage", "mainImage", "MainImage", "imgUrl")
         raw_photos = _first(data, "imglist", "images", "Images", "photos", "Photos", default=[])
         if isinstance(raw_photos, str):
             raw_photos = [raw_photos]
@@ -212,26 +213,24 @@ def map_china_car(data: dict) -> dict | None:
             (p if p.startswith("http") else f"https:{p}")
             for p in (raw_photos or []) if p
         ]
-        cover = _first(data, "img", "mainpicurl", "coverImage", "CoverImage", "mainImage", "MainImage", "imgUrl")
         if cover and not photos:
             photos = [cover if cover.startswith("http") else f"https:{cover}"]
 
-        # City: cityname (string) or cityid (int)
-        city = _first(data, "cityname", "city", "City", "cityName", "CityName")
+        # City: cname = city name (e.g. "泰安"), cityid = numeric code
+        city = _first(data, "cityname", "cname", "city", "City", "cityName", "CityName")
         if not city:
             city_id = _first(data, "cityid", "cityId")
             city = str(city_id) if city_id else None
 
-        # If brand or model still empty, try to parse from carname
-        # carname example: "宝马 3系 2022款 330i M运动套装"
-        if not brand_cn or not model_raw:
+        # If brand still empty, parse first word from carname
+        # carname format in che168: "BrandSeries CityName Year Spec" e.g. "奥迪A6L 泰安 2019款 40TFSI"
+        if not brand_cn:
             carname = _first(data, "carname", "CarName", default="")
             if carname:
-                parts = str(carname).split()
-                if not brand_cn and parts:
-                    brand_cn = parts[0]
-                if not model_raw and len(parts) > 1:
-                    model_raw = parts[1]
+                brand_cn = str(carname).split()[0]  # first word = brand+series merged
+        # If model still empty, use sname (spec/trim) as fallback — don't use carname parts[1] (city)
+        if not model_raw:
+            model_raw = _first(data, "sname", "kindname", default="")
 
         manufacturer = translate_brand(str(brand_cn)) if brand_cn else "Unknown"
         model_str = str(model_raw) if model_raw else ""
