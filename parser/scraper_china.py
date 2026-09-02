@@ -56,6 +56,75 @@ _CHINA_LIST_VARIANTS = [
 ]
 _LIST_VARIANT_IDX   = int(os.getenv("CHINA_LIST_VARIANT", "0"))
 CHE168_LIST_BASE    = _CHINA_LIST_VARIANTS[_LIST_VARIANT_IDX % len(_CHINA_LIST_VARIANTS)]
+
+# City-level sweep: ~40 major cities × up to 480 cars each = ~19 000 cars per sweep run.
+# The SPA resets its page counter when navigated to a new URL, so each city URL
+# starts a fresh 48-page / 480-car session.
+_CITY_SWEEP_URLS: list[str] = [
+    # ── major cities (default sort = most recent) ─────────────────────────────
+    "https://m.che168.com/beijing/list/",
+    "https://m.che168.com/shanghai/list/",
+    "https://m.che168.com/guangzhou/list/",
+    "https://m.che168.com/shenzhen/list/",
+    "https://m.che168.com/chengdu/list/",
+    "https://m.che168.com/wuhan/list/",
+    "https://m.che168.com/hangzhou/list/",
+    "https://m.che168.com/nanjing/list/",
+    "https://m.che168.com/xian/list/",
+    "https://m.che168.com/chongqing/list/",
+    "https://m.che168.com/tianjin/list/",
+    "https://m.che168.com/zhengzhou/list/",
+    "https://m.che168.com/changsha/list/",
+    "https://m.che168.com/qingdao/list/",
+    "https://m.che168.com/shenyang/list/",
+    "https://m.che168.com/dongguan/list/",
+    "https://m.che168.com/ningbo/list/",
+    "https://m.che168.com/hefei/list/",
+    "https://m.che168.com/foshan/list/",
+    "https://m.che168.com/suzhou/list/",
+    "https://m.che168.com/kunming/list/",
+    "https://m.che168.com/harbin/list/",
+    "https://m.che168.com/changchun/list/",
+    "https://m.che168.com/nanchang/list/",
+    "https://m.che168.com/jinan/list/",
+    "https://m.che168.com/guiyang/list/",
+    "https://m.che168.com/nanning/list/",
+    "https://m.che168.com/dalian/list/",
+    "https://m.che168.com/wenzhou/list/",
+    "https://m.che168.com/xiamen/list/",
+    "https://m.che168.com/taiyuan/list/",
+    "https://m.che168.com/shijiazhuang/list/",
+    "https://m.che168.com/fuzhou/list/",
+    "https://m.che168.com/wuxi/list/",
+    "https://m.che168.com/zhongshan/list/",
+    "https://m.che168.com/zhuhai/list/",
+    "https://m.che168.com/lanzhou/list/",
+    "https://m.che168.com/changzhou/list/",
+    "https://m.che168.com/nantong/list/",
+    "https://m.che168.com/wulumuqi/list/",
+    # ── price ↑ sort for the top 10 cities (captures cheapest / different cars) ─
+    "https://m.che168.com/beijing/list/?sortby=1",
+    "https://m.che168.com/shanghai/list/?sortby=1",
+    "https://m.che168.com/guangzhou/list/?sortby=1",
+    "https://m.che168.com/shenzhen/list/?sortby=1",
+    "https://m.che168.com/chengdu/list/?sortby=1",
+    "https://m.che168.com/wuhan/list/?sortby=1",
+    "https://m.che168.com/hangzhou/list/?sortby=1",
+    "https://m.che168.com/nanjing/list/?sortby=1",
+    "https://m.che168.com/xian/list/?sortby=1",
+    "https://m.che168.com/chongqing/list/?sortby=1",
+    # ── price ↓ sort for the top 10 cities (captures premium listings) ─────────
+    "https://m.che168.com/beijing/list/?sortby=2",
+    "https://m.che168.com/shanghai/list/?sortby=2",
+    "https://m.che168.com/guangzhou/list/?sortby=2",
+    "https://m.che168.com/shenzhen/list/?sortby=2",
+    "https://m.che168.com/chengdu/list/?sortby=2",
+    "https://m.che168.com/wuhan/list/?sortby=2",
+    "https://m.che168.com/hangzhou/list/?sortby=2",
+    "https://m.che168.com/nanjing/list/?sortby=2",
+    "https://m.che168.com/xian/list/?sortby=2",
+    "https://m.che168.com/chongqing/list/?sortby=2",
+]
 # Pattern to match in intercepted XHR responses — any che168 API subdomain
 # Old: api2scsou.che168.com/api/v11/search
 # New: apiiautoappsh.che168.com (discovered 2026-08-30 via XHR capture)
@@ -257,7 +326,7 @@ def map_china_car(data: dict) -> dict | None:
                         matched_brand_cn = cn_brand
                         matched_len = len(cn_brand)
                 if matched_brand_cn:
-                    if not brand_cn:
+                    if not brand_cn or brand_cn not in _BRAND_MAP:
                         brand_cn = matched_brand_cn
                     if not model_raw:
                         # Series name = chars between brand prefix and city name
@@ -392,7 +461,7 @@ async def _fetch_page_via_context_request(context, page_num: int) -> list[dict]:
         api_url = f"{_captured_api_url}{sep}pageindex={page_num}"
 
     try:
-        log.info(f"Page {page_num}: context.request.get → {api_url[:120]}")
+        log.info(f"Page {page_num}: context.request.get → {api_url}")
         resp = await context.request.get(
             api_url,
             headers={
@@ -493,7 +562,7 @@ async def _navigate_and_wait_for_xhr(page, label: str = "") -> list[dict]:
             return
         if not _captured_api_url:
             _captured_api_url = response.url
-            log.info(f"Captured API URL: {response.url[:120]}")
+            log.info(f"Captured API URL: {response.url}")
         try:
             body = await response.body()
             data = json.loads(body)
@@ -935,7 +1004,8 @@ def _flush_json():
 
 # ── Sync modes ─────────────────────────────────────────────────────────────────
 
-async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
+async def _run_pages(context, start_page: int, end_page: int, label: str = "",
+                     url_override: str | None = None):
     """
     Fetch pages start_page..end_page in a single browser tab using infinite-scroll interception.
 
@@ -947,8 +1017,9 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
       4. The SPA issues an XHR for the next page automatically — capture it.
       5. Repeat until end_page or 3 consecutive timeouts.
     """
+    base_url = url_override or CHE168_LIST_BASE
     page = await context.new_page()
-    log.info(f"{label}Starting page loop {start_page}–{end_page} (single scroll session)")
+    log.info(f"{label}Starting page loop {start_page}–{end_page}: {base_url}")
 
     # Shared queue: each resolved XHR puts (api_page, cars) here
     received: asyncio.Queue = asyncio.Queue()
@@ -963,7 +1034,7 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
             if data.get("returncode") == 0:
                 if not _captured_api_url:
                     _captured_api_url = response.url
-                    log.info(f"Captured API URL: {response.url[:120]}")
+                    log.info(f"Captured API URL: {response.url}")
                 result_obj = data.get("result", {})
                 api_page = result_obj.get("pageindex", 0)
                 items = _extract_items(data)
@@ -982,7 +1053,7 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
         # ── Page 1: navigate and wait for first XHR ──────────────────────────
         log.info(f"{label}Navigating (wait_until=commit)...")
         try:
-            await page.goto(CHE168_LIST_BASE, wait_until="commit", timeout=NAV_TIMEOUT)
+            await page.goto(base_url, wait_until="commit", timeout=NAV_TIMEOUT)
             log.info(f"{label}HTTP response received, waiting for XHR (up to 90 s)...")
         except Exception as e:
             log.warning(f"{label}Nav error: {e}")
@@ -1467,6 +1538,56 @@ async def run_bulk_sync():
     log.info(f"Bulk sync complete, fetched through page {page - 1}")
 
 
+async def run_sweep_sync():
+    """
+    Multi-session sweep: iterate through a list of filter URLs (cities / sort orders),
+    running up to INCREMENTAL_PAGES scroll-pages per URL.  Each new URL resets the
+    SPA's internal page counter, so we get up to 480 fresh cars per URL.
+
+    With the default _CITY_SWEEP_URLS list (~60 URLs) that gives ~28 800 cars per
+    GitHub Actions run.  Override the URL list via CHINA_SWEEP_URLS (comma-separated).
+
+    Usage:
+      python3 scraper_china.py sweep
+      CHINA_SWEEP_URLS="https://m.che168.com/beijing/list/,..." python3 scraper_china.py sweep
+    """
+    sweep_urls_env = os.getenv("CHINA_SWEEP_URLS", "")
+    urls = [u.strip() for u in sweep_urls_env.split(",") if u.strip()] if sweep_urls_env else _CITY_SWEEP_URLS
+
+    # Allow slicing via CHINA_SWEEP_START / CHINA_SWEEP_END (0-indexed)
+    sweep_start = int(os.getenv("CHINA_SWEEP_START", "0"))
+    sweep_end   = int(os.getenv("CHINA_SWEEP_END",   "0")) or len(urls)
+    urls = urls[sweep_start:sweep_end]
+
+    log.info(f"Sweep mode: {len(urls)} URLs (indices {sweep_start}–{sweep_end-1})")
+    if not OUTPUT_JSON:
+        await init_db()
+
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        log.error("Playwright not installed.")
+        return
+
+    async with async_playwright() as pw:
+        for i, url in enumerate(urls):
+            log.info(f"[Sweep {sweep_start+i+1}/{sweep_start+len(urls)}] {url}")
+            browser, context = await _make_browser_context(pw)
+            try:
+                done = await _run_pages(context, 1, INCREMENTAL_PAGES,
+                                        f"[{sweep_start+i+1}] ", url_override=url)
+                log.info(f"[Sweep {sweep_start+i+1}] done={done} pages, buffered={len(_json_buffer)} cars")
+            except Exception as e:
+                log.warning(f"[Sweep {sweep_start+i+1}] session error: {e}")
+            finally:
+                await browser.close()
+
+    _flush_json()
+    if not OUTPUT_JSON:
+        await enrich_segments()
+    log.info(f"Sweep complete: {len(_json_buffer)} cars total")
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "incremental"
     if mode == "full":
@@ -1476,5 +1597,7 @@ if __name__ == "__main__":
         asyncio.run(run_dump(page_num))
     elif mode == "bulk":
         asyncio.run(run_bulk_sync())
+    elif mode == "sweep":
+        asyncio.run(run_sweep_sync())
     else:
         asyncio.run(run_incremental_sync())

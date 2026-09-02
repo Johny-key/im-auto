@@ -10,11 +10,20 @@ on:
         type: choice
         options:
           - incremental
+          - sweep
           - full
           - dump
           - bulk
       variant:
         description: 'incremental: list URL variant (0=default, 1=price↑, 2=price↓, 3=mileage↑, 4=age↓)'
+        required: false
+        default: '0'
+      sweep_start:
+        description: 'sweep: start index in city URL list (0-based, default 0)'
+        required: false
+        default: '0'
+      sweep_end:
+        description: 'sweep: end index in city URL list (0 = all, e.g. 20 for first 20 cities)'
         required: false
         default: '0'
       bulk_start:
@@ -82,6 +91,8 @@ jobs:
           CHINA_INCREMENTAL_PAGES: "100"
           CHINA_CHECKPOINT_PATH: "/tmp/china_checkpoint.json"
           CHINA_LIST_VARIANT: "${{ github.event.inputs.variant || '0' }}"
+          CHINA_SWEEP_START: "${{ github.event.inputs.sweep_start || '0' }}"
+          CHINA_SWEEP_END: "${{ github.event.inputs.sweep_end || '0' }}"
           CHINA_BULK_START: "${{ github.event.inputs.bulk_start || '1' }}"
           CHINA_BULK_END: "${{ github.event.inputs.bulk_end || '0' }}"
           CHINA_BULK_DELAY: "${{ github.event.inputs.bulk_delay || '0.5' }}"
