@@ -466,85 +466,166 @@ async def _establish_session(context) -> "playwright.async_api.Page":
     return page
 
 
-async def _fetch_page_via_intercept(page, page_num: int, context=None) -> list[dict]:
+async def _navigate_and_wait_for_xhr(page, label: str = "") -> list[dict]:
     """
-    Fetch page N from che168 via XHR interception.
-
-    - page_num == 1: navigate to listing URL, wait for XHR, capture API URL.
-    - page_num > 1: replay the captured URL with pageindex=N via context.request
-      (Playwright's Node.js HTTP stack — no CORS, no monitoring-library interference).
+    Navigate to the che168 listing page and wait for the first page-1 XHR.
+    Uses wait_until="commit" so the call returns as soon as the HTTP response
+    starts, without waiting for domcontentloaded (which can take 90 s on GH Actions).
+    Returns the mapped cars for page 1.
     """
     global _captured_api_url
-
-    # Pages 2+: use captured API URL replayed via Playwright request context
-    if page_num > 1 and context:
-        if _captured_api_url:
-            return await _fetch_page_via_context_request(context, page_num)
-        else:
-            log.warning(f"Page {page_num}: API URL not yet captured — will try after page 1 loads")
-
     result: list[dict] = []
     api_done = asyncio.Event()
 
     async def handle_response(response):
         global _captured_api_url
-        if "api/v11/search" in response.url and not api_done.is_set():
-            # Capture URL for future pages (once)
-            if not _captured_api_url:
-                _captured_api_url = response.url
-                log.info(f"Captured API URL: {response.url[:120]}")
-            try:
-                body = await response.body()
-                data = json.loads(body)
-                rc = data.get("returncode", -1)
-                if rc == 0:
-                    result_obj = data.get("result", {})
-                    items = _extract_items(data)
-                    total = result_obj.get("totalcount", "?")
-                    actual_page = result_obj.get("pageindex", "?")
-                    if items:
-                        log.info(f"Page {page_num}: pageindex={actual_page} → {len(items)} items (total={total})")
-                    else:
-                        log.warning(f"Page {page_num}: 0 items, result keys={list(result_obj.keys())}, total={total}")
-                        try:
-                            Path("/tmp/che168_raw_response.json").write_bytes(body)
-                        except Exception:
-                            pass
-                    result.extend([m for item in items if (m := map_china_car(item))])
-                else:
-                    log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
-            except Exception as e:
-                log.warning(f"Page {page_num}: intercept parse error: {e}")
-            finally:
-                api_done.set()
+        if "api/v11/search" not in response.url or api_done.is_set():
+            return
+        if not _captured_api_url:
+            _captured_api_url = response.url
+            log.info(f"Captured API URL: {response.url[:120]}")
+        try:
+            body = await response.body()
+            data = json.loads(body)
+            rc = data.get("returncode", -1)
+            if rc == 0:
+                result_obj = data.get("result", {})
+                items = _extract_items(data)
+                total = result_obj.get("totalcount", "?")
+                actual_page = result_obj.get("pageindex", "?")
+                log.info(f"{label}Page 1: pageindex={actual_page} → {len(items)} items (total={total})")
+                if not items:
+                    try:
+                        Path("/tmp/che168_raw_response.json").write_bytes(body)
+                    except Exception:
+                        pass
+                result.extend([m for item in items if (m := map_china_car(item))])
+            else:
+                log.warning(f"{label}Page 1: API returncode={rc} msg={data.get('message','')}")
+        except Exception as e:
+            log.warning(f"{label}Page 1: parse error: {e}")
+        finally:
+            api_done.set()
 
     page.on("response", handle_response)
     try:
         try:
-            await page.goto(CHE168_LIST_BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            # commit = return as soon as HTTP response starts (before DOM loads)
+            await page.goto(CHE168_LIST_BASE, wait_until="commit", timeout=NAV_TIMEOUT)
+            log.info(f"{label}HTTP response received, waiting for XHR (up to 90 s)...")
         except Exception as e:
-            log.warning(f"Page {page_num}: nav timeout (continuing): {e}")
+            log.warning(f"{label}Nav error: {e}")
 
+        # Page loads slowly in China; give it 90 s for the XHR to fire
         try:
-            await asyncio.wait_for(api_done.wait(), timeout=15.0)
+            await asyncio.wait_for(api_done.wait(), timeout=90.0)
         except asyncio.TimeoutError:
-            log.warning(f"Page {page_num}: search API response not intercepted within 15s")
+            log.warning(f"{label}Page 1 XHR not intercepted in 90 s")
     finally:
         page.remove_listener("response", handle_response)
 
     return result
 
 
+async def _scroll_to_trigger_next_page(page, received: asyncio.Queue, label: str = "") -> bool:
+    """
+    Try multiple scroll methods to trigger the SPA's infinite-scroll XHR.
+    Returns True if a new XHR appeared in `received` within the timeout.
+    """
+    # Method 1: hard-scroll all overflow containers + document
+    await page.evaluate("""() => {
+        Array.from(document.querySelectorAll('*')).forEach(el => {
+            try {
+                const ov = getComputedStyle(el).overflowY;
+                if ((ov === 'auto' || ov === 'scroll') && el.scrollHeight > el.clientHeight + 50) {
+                    el.scrollTop = el.scrollHeight;
+                }
+            } catch(e) {}
+        });
+        window.scrollTo(0, document.body.scrollHeight);
+        document.documentElement.scrollTop = document.documentElement.scrollHeight;
+    }""")
+    await page.wait_for_timeout(400)
+    if not received.empty():
+        return True
+
+    # Method 2: incremental scroll (moves IntersectionObserver sentinel into view step-by-step)
+    total_h = await page.evaluate(
+        "Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 2000)"
+    )
+    pos = 0
+    while pos < total_h:
+        if not received.empty():
+            return True
+        pos = min(pos + 300, total_h)
+        await page.evaluate(f"""() => {{
+            window.scrollTo(0, {pos});
+            Array.from(document.querySelectorAll('*')).forEach(el => {{
+                try {{
+                    const ov = getComputedStyle(el).overflowY;
+                    if ((ov === 'auto' || ov === 'scroll') && el.scrollHeight > el.clientHeight + 50) {{
+                        el.scrollTop = el.scrollHeight * ({pos} / {total_h});
+                    }}
+                }} catch(e) {{}}
+            }});
+        }}""")
+        await page.wait_for_timeout(100)
+
+    if not received.empty():
+        return True
+
+    # Method 3: simulate mouse wheel (some SPAs use onwheel handler, not IntersectionObserver)
+    await page.mouse.move(200, 400)
+    for _ in range(30):
+        if not received.empty():
+            return True
+        await page.mouse.wheel(0, 600)
+        await page.wait_for_timeout(80)
+
+    if not received.empty():
+        return True
+
+    # Method 4: End key
+    await page.keyboard.press("End")
+    await page.wait_for_timeout(800)
+    return not received.empty()
+
+
 async def _fetch_page(context, page_num: int) -> list[dict]:
     """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
     page = await context.new_page()
     try:
-        # Page 1 navigation populates _captured_api_url
-        cars_p1 = await _fetch_page_via_intercept(page, 1, context=context)
-        await asyncio.sleep(0.5)
+        cars_p1 = await _navigate_and_wait_for_xhr(page, label="Dump ")
         if page_num == 1:
             return cars_p1
-        return await _fetch_page_via_context_request(context, page_num)
+        # For pages 2+: try scrolling (dump only, not used in incremental)
+        received: asyncio.Queue = asyncio.Queue()
+        async def _capture(response):
+            if "api/v11/search" in response.url:
+                try:
+                    body = await response.body()
+                    data = json.loads(body)
+                    if data.get("returncode") == 0:
+                        items = _extract_items(data)
+                        cars = [m for item in items if (m := map_china_car(item))]
+                        await received.put(cars)
+                except Exception:
+                    pass
+        page.on("response", _capture)
+        try:
+            for attempt in range(page_num - 1):
+                await page.wait_for_timeout(3000)
+                await _scroll_to_trigger_next_page(page, received, label=f"Dump p{attempt+2} ")
+                try:
+                    cars = await asyncio.wait_for(received.get(), timeout=20.0)
+                    if attempt == page_num - 2:
+                        return cars
+                except asyncio.TimeoutError:
+                    log.warning(f"Dump: page {attempt+2} XHR timeout")
+                    break
+        finally:
+            page.remove_listener("response", _capture)
+        return []
     finally:
         await page.close()
 
@@ -846,45 +927,97 @@ def _flush_json():
 
 async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
     """
-    Fetch pages start_page..end_page by clicking "next page" within one browser tab.
+    Fetch pages start_page..end_page in a single browser tab using infinite-scroll interception.
 
     Strategy:
-      1. Navigate to page 1, intercept XHR.
-      2. For each subsequent page click the "next page" button so the SPA fires
-         the XHR with the correct pageindex — no full page reload, no CORS issues.
+      1. Navigate to the listing page, wait up to 90 s for the XHR (page 1 data).
+      2. After XHR fires, wait 5 s for React to render the list items.
+      3. Trigger the SPA's IntersectionObserver by scrolling: DOM-scroll all
+         overflow containers, incremental window.scrollTo, mouse wheel, End key.
+      4. The SPA issues an XHR for the next page automatically — capture it.
+      5. Repeat until end_page or 3 consecutive timeouts.
     """
     page = await context.new_page()
-    log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept + click")
+    log.info(f"{label}Starting page loop {start_page}–{end_page} (single scroll session)")
 
-    # Always load page 1 first to populate _captured_api_url, then replay for 2+
-    log.info(f"{label}Loading page 1 to capture API URL...")
-    p1_cars = await _fetch_page_via_intercept(page, 1, context=context)
-    if start_page == 1 and p1_cars:
-        await _save_cars(p1_cars)
-    await asyncio.sleep(0.5)
+    # Shared queue: each resolved XHR puts (api_page, cars) here
+    received: asyncio.Queue = asyncio.Queue()
 
+    async def handle_response(response):
+        global _captured_api_url
+        if "api/v11/search" not in response.url:
+            return
+        try:
+            body = await response.body()
+            data = json.loads(body)
+            if data.get("returncode") == 0:
+                if not _captured_api_url:
+                    _captured_api_url = response.url
+                    log.info(f"Captured API URL: {response.url[:120]}")
+                result_obj = data.get("result", {})
+                api_page = result_obj.get("pageindex", 0)
+                items = _extract_items(data)
+                total = result_obj.get("totalcount", "?")
+                cars = [m for item in items if (m := map_china_car(item))]
+                log.info(f"{label}XHR pageindex={api_page} → {len(cars)} cars (total={total})")
+                await received.put((api_page, cars))
+            else:
+                log.warning(f"{label}XHR returncode={data.get('returncode')} msg={data.get('message', '')}")
+        except Exception as e:
+            log.warning(f"{label}Response parse error: {e}")
+
+    page.on("response", handle_response)
     done = 0
-    consecutive_empty = 0
     try:
-        for page_num in range(max(start_page, 2), end_page + 1):
-            page_idx = page_num
-            cars = await _fetch_page_via_intercept(page, page_idx, context=context)
-            if not cars:
-                consecutive_empty += 1
-                if consecutive_empty >= 3:
-                    log.info(f"{label}3 consecutive empty pages at {page_idx} — stopping")
-                    break
-                continue
-            consecutive_empty = 0
-            await _save_cars(cars)
-            done += 1
-            if page_num % 10 == 0:
-                log.info(f"{label}Progress: page {page_num}, buffered {len(_json_buffer)} cars")
-            await asyncio.sleep(0.3)
-    finally:
-        await page.close()
+        # ── Page 1: navigate and wait for first XHR ──────────────────────────
+        log.info(f"{label}Navigating (wait_until=commit)...")
+        try:
+            await page.goto(CHE168_LIST_BASE, wait_until="commit", timeout=NAV_TIMEOUT)
+            log.info(f"{label}HTTP response received, waiting for XHR (up to 90 s)...")
+        except Exception as e:
+            log.warning(f"{label}Nav error: {e}")
 
-    return done
+        try:
+            api_page1, cars1 = await asyncio.wait_for(received.get(), timeout=90.0)
+        except asyncio.TimeoutError:
+            log.error(f"{label}Page 1 XHR not received in 90 s — likely blocked")
+            return 0
+
+        if start_page == 1 and cars1:
+            await _save_cars(cars1)
+            done += 1
+            log.info(f"{label}Page 1 saved ({len(cars1)} cars)")
+
+        # ── Pages 2+: scroll loop ────────────────────────────────────────────
+        consecutive_empty = 0
+        for target_page in range(2, end_page + 1):
+            # Wait for React to render list items from the previous XHR
+            await page.wait_for_timeout(5000)
+
+            await _scroll_to_trigger_next_page(page, received, label=label)
+
+            # Wait for the next XHR to fire
+            try:
+                api_page, cars = await asyncio.wait_for(received.get(), timeout=20.0)
+                if api_page >= start_page and cars:
+                    await _save_cars(cars)
+                    done += 1
+                    consecutive_empty = 0
+                    if done % 10 == 0:
+                        log.info(f"{label}Progress: {done} pages saved, total buffered {len(_json_buffer)}")
+                else:
+                    consecutive_empty += 1
+            except asyncio.TimeoutError:
+                consecutive_empty += 1
+                log.warning(f"{label}Page {target_page}: XHR timeout ({consecutive_empty}/3)")
+                if consecutive_empty >= 3:
+                    log.info(f"{label}3 consecutive timeouts — stopping")
+                    break
+
+        return done
+    finally:
+        page.remove_listener("response", handle_response)
+        await page.close()
 
 
 async def run_full_sync():
@@ -906,28 +1039,16 @@ async def run_full_sync():
     async with async_playwright() as pw:
         browser, context = await _make_browser_context(pw)
         try:
-            page = await context.new_page()
-            page_num = start_page
-            consecutive_empty = 0
-            try:
-                while True:
-                    cars = await _fetch_page_via_intercept(page, page_num, context=context)
-                    if not cars:
-                        consecutive_empty += 1
-                        if consecutive_empty >= 5:
-                            log.info(f"Page {page_num}: 5 consecutive empty — full sync done")
-                            break
-                        page_num += 1
-                        continue
-                    consecutive_empty = 0
-                    await _save_cars(cars)
-                    _save_checkpoint({"last_page": page_num})
-                    if page_num % 20 == 0:
-                        log.info(f"Full sync progress: {page_num} pages")
-                    page_num += 1
-                    await asyncio.sleep(0.5)
-            finally:
-                await page.close()
+            # Run in chunks of 200 pages; each chunk opens a fresh tab
+            chunk = 200
+            p = start_page
+            while True:
+                done = await _run_pages(context, p, p + chunk - 1, "Full ")
+                if done == 0:
+                    log.info(f"Full sync: no pages fetched starting at {p} — done")
+                    break
+                _save_checkpoint({"last_page": p + done - 1})
+                p += done
         finally:
             await browser.close()
 
@@ -1119,6 +1240,82 @@ async def run_dump(page_num: int):
             if raw_items_holder:
                 print(f"\n=== RAW API ITEM FIELDS (first item) ===", file=sys.stderr)
                 print(json.dumps(raw_items_holder[0], ensure_ascii=False, default=str, indent=2), file=sys.stderr)
+
+            # ── Scroll diagnostic: find scroll containers and test infinite scroll ──
+            scroll_page = await context.new_page()
+            scroll_received: asyncio.Queue = asyncio.Queue()
+
+            async def _scroll_capture(response):
+                if "api/v11/search" in response.url:
+                    try:
+                        body = await response.body()
+                        data = json.loads(body)
+                        if data.get("returncode") == 0:
+                            result_obj = data.get("result", {})
+                            api_pg = result_obj.get("pageindex", "?")
+                            items = _extract_items(data)
+                            log.warning(f"SCROLL TEST XHR: pageindex={api_pg}, items={len(items)}")
+                            await scroll_received.put(api_pg)
+                    except Exception as e:
+                        log.warning(f"SCROLL CAPTURE error: {e}")
+
+            scroll_page.on("response", _scroll_capture)
+            try:
+                log.info("SCROLL DIAG: navigating (wait_until=commit)...")
+                try:
+                    await scroll_page.goto(CHE168_LIST_BASE, wait_until="commit", timeout=NAV_TIMEOUT)
+                except Exception as e:
+                    log.warning(f"SCROLL DIAG nav error: {e}")
+
+                # Wait for page 1 XHR
+                try:
+                    p1 = await asyncio.wait_for(scroll_received.get(), timeout=90.0)
+                    log.info(f"SCROLL DIAG: page 1 XHR received (pageindex={p1})")
+                except asyncio.TimeoutError:
+                    log.warning("SCROLL DIAG: page 1 XHR timeout")
+                    p1 = None
+
+                if p1 is not None:
+                    # Log scroll containers BEFORE scroll (after 5s render wait)
+                    await scroll_page.wait_for_timeout(5000)
+                    containers = await scroll_page.evaluate("""() => {
+                        return Array.from(document.querySelectorAll('*'))
+                            .filter(el => {
+                                try {
+                                    const ov = getComputedStyle(el).overflowY;
+                                    return (ov === 'auto' || ov === 'scroll')
+                                           && el.scrollHeight > el.clientHeight + 50;
+                                } catch(e) { return false; }
+                            })
+                            .map(el => ({
+                                tag: el.tagName,
+                                cls: el.className.substring(0, 60),
+                                scrollH: el.scrollHeight,
+                                clientH: el.clientHeight,
+                                scrollTop: el.scrollTop,
+                                id: el.id || ''
+                            }));
+                    }""")
+                    log.warning(f"SCROLL DIAG: scrollable containers ({len(containers)} found):")
+                    for c in containers[:10]:
+                        log.warning(f"  {c}")
+
+                    body_h = await scroll_page.evaluate("document.body.scrollHeight")
+                    doc_h = await scroll_page.evaluate("document.documentElement.scrollHeight")
+                    win_h = await scroll_page.evaluate("window.innerHeight")
+                    log.warning(f"SCROLL DIAG: body.scrollHeight={body_h}, doc.scrollHeight={doc_h}, innerHeight={win_h}")
+
+                    # Attempt scroll and wait for page 2 XHR
+                    log.info("SCROLL DIAG: attempting scroll to trigger page 2...")
+                    await _scroll_to_trigger_next_page(scroll_page, scroll_received, label="SCROLL DIAG ")
+                    try:
+                        p2 = await asyncio.wait_for(scroll_received.get(), timeout=20.0)
+                        log.warning(f"SCROLL DIAG: ✓ page 2 XHR received! (pageindex={p2})")
+                    except asyncio.TimeoutError:
+                        log.warning("SCROLL DIAG: ✗ page 2 XHR NOT received within 20 s — scroll doesn't work")
+            finally:
+                scroll_page.remove_listener("response", _scroll_capture)
+                await scroll_page.close()
 
             cars_mapped = await _fetch_page(context, page_num)
             print(f"\n--- Extracted {len(cars_mapped)} cars via XHR intercept ---", file=sys.stderr)
