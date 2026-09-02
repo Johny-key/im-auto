@@ -360,12 +360,21 @@ async def _fetch_page_via_intercept(page, page_num: int) -> list[dict]:
                 data = json.loads(body)
                 rc = data.get("returncode", -1)
                 if rc == 0:
+                    result_obj = data.get("result", {})
                     items = _extract_items(data)
-                    total = data.get("result", {}).get("totalcount", "?")
-                    actual_page = data.get("result", {}).get("pageindex", "?")
-                    log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total})")
+                    total = result_obj.get("totalcount", "?")
+                    actual_page = result_obj.get("pageindex", "?")
                     if items:
-                        log.debug(f"Page {page_num}: first item keys: {list(items[0].keys())}")
+                        log.info(f"Page {page_num}: intercepted pageindex={actual_page} → {len(items)} items (total={total}), first item keys={list(items[0].keys())[:10]}")
+                    else:
+                        result_keys = list(result_obj.keys())
+                        log.warning(f"Page {page_num}: 0 items! result keys={result_keys}, total={total}")
+                        # Save raw JSON for inspection
+                        try:
+                            Path("/tmp/che168_raw_response.json").write_bytes(body)
+                            log.warning(f"Raw JSON saved to /tmp/che168_raw_response.json")
+                        except Exception:
+                            pass
                     result.extend([m for item in items if (m := map_china_car(item))])
                 else:
                     log.warning(f"Page {page_num}: API returncode={rc} msg={data.get('message','')}")
@@ -535,8 +544,10 @@ def _extract_items(data: dict) -> list[dict]:
     """Extract car list from API response regardless of nesting."""
     for path in [
         ["result", "list"],
-        ["data", "list"],
         ["result", "searchlist"],
+        ["result", "carlist"],
+        ["result", "data"],
+        ["data", "list"],
         ["list"],
         ["items"],
         ["data"],
@@ -546,8 +557,17 @@ def _extract_items(data: dict) -> list[dict]:
             node = node.get(key) if isinstance(node, dict) else None
             if node is None:
                 break
-        if isinstance(node, list):
+        if isinstance(node, list) and node:
             return node
+
+    # Fallback: scan all list-typed values at result/data level
+    for top_key in ("result", "data"):
+        top = data.get(top_key)
+        if isinstance(top, dict):
+            for k, v in top.items():
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    log.debug(f"_extract_items: found list at {top_key}.{k} ({len(v)} items)")
+                    return v
     return []
 
 
@@ -925,10 +945,19 @@ async def run_dump(page_num: int):
                         body = await response.body()
                         data = json.loads(body)
                         if data.get("returncode") == 0:
-                            items = _extract_items(data)
-                            raw_items_holder.extend(items[:3])
-                    except Exception:
-                        pass
+                            result_obj = data.get("result", data.get("data", {}))
+                            # Find ANY list in the response, regardless of key
+                            for k, v in result_obj.items() if isinstance(result_obj, dict) else []:
+                                if isinstance(v, list) and v:
+                                    raw_items_holder.extend(v[:3])
+                                    log.warning(f"RAW CAPTURE: found list at result.{k!r} with {len(v)} items")
+                                    break
+                            if not raw_items_holder:
+                                # Just log the result keys and first 500 chars
+                                log.warning(f"RAW CAPTURE: result keys = {list(result_obj.keys()) if isinstance(result_obj, dict) else type(result_obj)}")
+                                Path("/tmp/che168_raw_response.json").write_bytes(body)
+                    except Exception as e:
+                        log.warning(f"RAW CAPTURE error: {e}")
 
             diag_page2 = await context.new_page()
             diag_page2.on("response", _raw_capture)
