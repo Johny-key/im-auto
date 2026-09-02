@@ -429,52 +429,10 @@ async def _fetch_page_via_intercept(page, page_num: int, _unused=None) -> list[d
             except Exception as e:
                 log.warning(f"Page 1: nav timeout (continuing): {e}")
         else:
-            # Subsequent pages: scroll down to reveal the "next" button, then click it
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(800)
-
-            clicked = False
-            # Try various selectors for the "next page" control on che168 mobile
-            next_selectors = [
-                "text=下一页",
-                "[class*='next']:not([disabled])",
-                "[class*='Next']:not([disabled])",
-                "button:has-text('下')",
-                "a:has-text('下一页')",
-                "[aria-label='下一页']",
-                ".pagination-next",
-                ".page-next",
-            ]
-            for sel in next_selectors:
-                try:
-                    btn = await page.query_selector(sel)
-                    if btn:
-                        await btn.click()
-                        clicked = True
-                        log.debug(f"Page {page_num}: clicked '{sel}'")
-                        break
-                except Exception:
-                    continue
-
-            if not clicked:
-                # Fallback: look for a clickable element that looks like ">"
-                try:
-                    # Try JS: find any element whose text is a single > or »
-                    clicked = await page.evaluate("""() => {
-                        const candidates = [...document.querySelectorAll('*')].filter(el => {
-                            const t = (el.innerText || '').trim();
-                            return (t === '>' || t === '»' || t === '下一页' || t === 'Next') &&
-                                   el.offsetParent !== null;
-                        });
-                        if (candidates.length) { candidates[candidates.length-1].click(); return true; }
-                        return false;
-                    }""")
-                except Exception:
-                    pass
-
-            if not clicked:
-                log.warning(f"Page {page_num}: could not find next-page button — stopping pagination")
-                api_done.set()
+            # Subsequent pages: scroll to bottom in small steps to trigger infinite-scroll observer
+            for _ in range(8):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(400)
 
         # Wait for XHR
         try:
