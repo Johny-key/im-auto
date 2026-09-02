@@ -94,6 +94,13 @@ _BRAND_MAP: dict[str, str] = {
     "凯迪拉克": "Cadillac", "特斯拉": "Tesla",         "领克":  "Lynk & Co",
     "极狐":   "ARCFOX",     "飞凡":   "Rising Auto",   "智己":  "IM Motors",
     "阿维塔": "Avatr",      "路特斯": "Lotus",         "星途":  "Exeed",
+    "保时捷": "Porsche",    "兰博基尼": "Lamborghini", "法拉利": "Ferrari",
+    "玛莎拉蒂": "Maserati", "宾利":  "Bentley",       "劳斯莱斯": "Rolls-Royce",
+    "迈巴赫": "Maybach",    "阿斯顿马丁": "Aston Martin", "沃尔沃": "Volvo",
+    "捷豹":   "Jaguar",     "路虎":  "Land Rover",    "mini":  "MINI",
+    "Mini":   "MINI",       "MINI":  "MINI",          "斯巴鲁": "Subaru",
+    "马自达": "Mazda",      "三菱":  "Mitsubishi",    "雷克萨斯": "Lexus",
+    "英菲尼迪": "Infiniti", "讴歌":  "Acura",
     "捷途":   "Jetour",     "坦克":   "Tank",          "欧拉":  "ORA",
     "魏牌":   "WEY",        "雷达":   "Radar",         "银河":  "Galaxy",
     "帝豪":   "Emgrand",    "星越":   "Xingyue",
@@ -155,8 +162,11 @@ def map_china_car(data: dict) -> dict | None:
         badge     = _first(data, "sname", "specName", "SpecName", "trimName", "spec", "Spec")
 
         # Fuel type
-        fuel_cn   = _first(data, "fueltype", "fuelType", "FuelType", "fuel", "Fuel", default="")
-        fuel      = translate_fuel(str(fuel_cn)) if fuel_cn else None
+        fuel_cn = _first(data, "fueltype", "fuelType", "FuelType", "fuel", "Fuel", default="")
+        fuel    = translate_fuel(str(fuel_cn)) if fuel_cn else None
+        # isnewenergy=1 → electric (new-energy vehicles)
+        if not fuel and _first(data, "isnewenergy", default=0):
+            fuel = "electric"
 
         # Year: firstregyear (first registration year, int e.g. 2021)
         raw_year = str(_first(data, "firstregyear", "registeryear", "registerDate", "RegisterDate", "year", "Year", default=""))
@@ -222,15 +232,38 @@ def map_china_car(data: dict) -> dict | None:
             city_id = _first(data, "cityid", "cityId")
             city = str(city_id) if city_id else None
 
-        # If brand still empty, parse first word from carname
-        # carname format in che168: "BrandSeries CityName Year Spec" e.g. "奥迪A6L 泰安 2019款 40TFSI"
-        if not brand_cn:
+        # Parse carname to fill missing brand and/or model.
+        # carname format: "BrandSeries CityName Year Spec" e.g. "奥迪A6L 泰安 2019款 40TFSI"
+        if not brand_cn or not model_raw:
             carname = _first(data, "carname", "CarName", default="")
             if carname:
-                brand_cn = str(carname).split()[0]  # first word = brand+series merged
-        # If model still empty, use sname (spec/trim) as fallback — don't use carname parts[1] (city)
-        if not model_raw:
-            model_raw = _first(data, "sname", "kindname", default="")
+                carname_str = str(carname)
+                city_name = str(_first(data, "cname", default="") or "")
+                # Longest-match against _BRAND_MAP to split brand prefix from series
+                matched_brand_cn = ""
+                matched_len = 0
+                for cn_brand in _BRAND_MAP:
+                    if carname_str.startswith(cn_brand) and len(cn_brand) > matched_len:
+                        matched_brand_cn = cn_brand
+                        matched_len = len(cn_brand)
+                if matched_brand_cn:
+                    if not brand_cn:
+                        brand_cn = matched_brand_cn
+                    if not model_raw:
+                        # Series name = chars between brand prefix and city name
+                        # e.g. "奔驰C级 成都 2017款" → after "奔驰" → "C级 成都 ..."
+                        # → stop before city name → "C级"
+                        rest = carname_str[matched_len:].strip()
+                        if city_name and city_name in rest:
+                            rest = rest[:rest.index(city_name)].strip()
+                        # Take what's left (should be series name like "C级", "A6L")
+                        series = rest.split()[0] if rest else ""
+                        if series and not series.endswith("款") and not series.isdigit():
+                            model_raw = series
+                else:
+                    # Unknown brand — whole first word is brand+series merged
+                    if not brand_cn:
+                        brand_cn = carname_str.split()[0]
 
         manufacturer = translate_brand(str(brand_cn)) if brand_cn else "Unknown"
         model_str = str(model_raw) if model_raw else ""
@@ -310,6 +343,9 @@ async def _make_browser_context(playwright):
 
 
 CHE168_DIRECT_API = "https://api2scsou.che168.com/api/v11/search"
+
+# Captured at runtime from the first successful XHR — used to replay for pages 2+
+_captured_api_url: str | None = None
 _DIRECT_API_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 12; Pixel 6) "
@@ -321,6 +357,55 @@ _DIRECT_API_HEADERS = {
     "Referer": "https://m.che168.com/",
     "Origin": "https://m.che168.com",
 }
+
+
+async def _fetch_page_via_context_request(context, page_num: int) -> list[dict]:
+    """
+    Replay the che168 API call for page N using the browser session cookies.
+
+    context.request runs in Playwright's Node.js layer (not the browser JS
+    sandbox), so there are no CORS restrictions and no monitoring-library
+    interference.  The URL captured on page 1 already has the correct signed
+    params; we just swap pageindex=1 → pageindex=N.
+    """
+    import re as _re
+    global _captured_api_url
+    if not _captured_api_url:
+        log.warning(f"Page {page_num}: no captured API URL yet — falling back to scroll")
+        return []
+
+    # Replace pageindex value in the captured URL
+    if _re.search(r'pageindex=\d+', _captured_api_url, _re.IGNORECASE):
+        api_url = _re.sub(r'pageindex=\d+', f'pageindex={page_num}', _captured_api_url, flags=_re.IGNORECASE)
+    else:
+        sep = '&' if '?' in _captured_api_url else '?'
+        api_url = f"{_captured_api_url}{sep}pageindex={page_num}"
+
+    try:
+        log.info(f"Page {page_num}: context.request.get → {api_url[:120]}")
+        resp = await context.request.get(
+            api_url,
+            headers={
+                "Referer": "https://m.che168.com/",
+                "Accept": "application/json, text/plain, */*",
+            },
+        )
+        body = await resp.body()
+        data = json.loads(body)
+        rc = data.get("returncode", -1)
+        if rc == 0:
+            items = _extract_items(data)
+            result_obj = data.get("result", {})
+            actual_page = result_obj.get("pageindex", "?")
+            total = result_obj.get("totalcount", "?")
+            log.info(f"Page {page_num}: pageindex={actual_page} → {len(items)} items (total={total})")
+            return [m for item in items if (m := map_china_car(item))]
+        else:
+            log.warning(f"Page {page_num}: context.request returncode={rc} msg={data.get('message', '')}")
+            return []
+    except Exception as e:
+        log.warning(f"Page {page_num}: context.request error: {e}")
+        return []
 
 
 async def _fetch_page_direct(page_num: int) -> list[dict]:
@@ -381,19 +466,33 @@ async def _establish_session(context) -> "playwright.async_api.Page":
     return page
 
 
-async def _fetch_page_via_intercept(page, page_num: int, _unused=None) -> list[dict]:
+async def _fetch_page_via_intercept(page, page_num: int, context=None) -> list[dict]:
     """
     Fetch page N from che168 via XHR interception.
 
-    - page_num == 1: navigate to listing URL, wait for XHR.
-    - page_num > 1: click the "next page" button so the SPA advances and fires
-      the XHR with the correct pageindex — no full reload, no CORS issues.
+    - page_num == 1: navigate to listing URL, wait for XHR, capture API URL.
+    - page_num > 1: replay the captured URL with pageindex=N via context.request
+      (Playwright's Node.js HTTP stack — no CORS, no monitoring-library interference).
     """
+    global _captured_api_url
+
+    # Pages 2+: use captured API URL replayed via Playwright request context
+    if page_num > 1 and context:
+        if _captured_api_url:
+            return await _fetch_page_via_context_request(context, page_num)
+        else:
+            log.warning(f"Page {page_num}: API URL not yet captured — will try after page 1 loads")
+
     result: list[dict] = []
     api_done = asyncio.Event()
 
     async def handle_response(response):
+        global _captured_api_url
         if "api/v11/search" in response.url and not api_done.is_set():
+            # Capture URL for future pages (once)
+            if not _captured_api_url:
+                _captured_api_url = response.url
+                log.info(f"Captured API URL: {response.url[:120]}")
             try:
                 body = await response.body()
                 data = json.loads(body)
@@ -421,42 +520,11 @@ async def _fetch_page_via_intercept(page, page_num: int, _unused=None) -> list[d
 
     page.on("response", handle_response)
     try:
-        if page_num == 1:
-            # First page: full navigation
-            try:
-                await page.goto(CHE168_LIST_BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-            except Exception as e:
-                log.warning(f"Page 1: nav timeout (continuing): {e}")
-        else:
-            # Trigger infinite-scroll: scroll incrementally through possible containers
-            await page.evaluate("""() => {
-                // Collect all scrollable containers + window
-                const els = [document.documentElement, document.body,
-                              ...document.querySelectorAll('*')].filter(el => {
-                    try { return el && el.scrollHeight > el.clientHeight + 50; }
-                    catch { return false; }
-                });
-                for (const el of els) {
-                    try { el.scrollTop = el.scrollHeight; } catch {}
-                }
-                window.scrollTo(0, document.body.scrollHeight);
-            }""")
-            await page.wait_for_timeout(500)
-            # Incremental window scroll (300px steps) to walk IntersectionObserver sentinels into view
-            total_h = await page.evaluate("document.body.scrollHeight")
-            step = max(300, total_h // 20)
-            pos = 0
-            while pos < total_h:
-                pos = min(pos + step, total_h)
-                await page.evaluate(f"window.scrollTo(0, {pos})")
-                await page.wait_for_timeout(200)
-                if api_done.is_set():
-                    break
-            # Final hard scroll to absolute bottom
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(500)
+        try:
+            await page.goto(CHE168_LIST_BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        except Exception as e:
+            log.warning(f"Page {page_num}: nav timeout (continuing): {e}")
 
-        # Wait for XHR
         try:
             await asyncio.wait_for(api_done.wait(), timeout=15.0)
         except asyncio.TimeoutError:
@@ -471,11 +539,12 @@ async def _fetch_page(context, page_num: int) -> list[dict]:
     """Single-page fetch (used only by run_dump). Normal sync uses _run_pages."""
     page = await context.new_page()
     try:
-        # Must click through pages 1..(page_num-1) to reach page_num in the SPA
-        for p in range(1, page_num):
-            await _fetch_page_via_intercept(page, p)
-            await asyncio.sleep(0.3)
-        return await _fetch_page_via_intercept(page, page_num)
+        # Page 1 navigation populates _captured_api_url
+        cars_p1 = await _fetch_page_via_intercept(page, 1, context=context)
+        await asyncio.sleep(0.5)
+        if page_num == 1:
+            return cars_p1
+        return await _fetch_page_via_context_request(context, page_num)
     finally:
         await page.close()
 
@@ -787,20 +856,19 @@ async def _run_pages(context, start_page: int, end_page: int, label: str = ""):
     page = await context.new_page()
     log.info(f"{label}Starting page loop {start_page}–{end_page} via XHR intercept + click")
 
-    # Must always start from page 1 (SPA can't deep-link to a page)
-    # If start_page > 1, we click through pages 1..(start_page-1) without saving
-    if start_page > 1:
-        log.info(f"{label}Fast-forwarding to page {start_page} (clicking through {start_page-1} pages)...")
-        for p in range(1, start_page):
-            await _fetch_page_via_intercept(page, p)
-            await asyncio.sleep(0.3)
+    # Always load page 1 first to populate _captured_api_url, then replay for 2+
+    log.info(f"{label}Loading page 1 to capture API URL...")
+    p1_cars = await _fetch_page_via_intercept(page, 1, context=context)
+    if start_page == 1 and p1_cars:
+        await _save_cars(p1_cars)
+    await asyncio.sleep(0.5)
 
     done = 0
     consecutive_empty = 0
     try:
-        for page_num in range(start_page, end_page + 1):
-            page_idx = page_num  # actual SPA page = (start_page-1) clicks + current
-            cars = await _fetch_page_via_intercept(page, page_idx)
+        for page_num in range(max(start_page, 2), end_page + 1):
+            page_idx = page_num
+            cars = await _fetch_page_via_intercept(page, page_idx, context=context)
             if not cars:
                 consecutive_empty += 1
                 if consecutive_empty >= 3:
@@ -843,7 +911,7 @@ async def run_full_sync():
             consecutive_empty = 0
             try:
                 while True:
-                    cars = await _fetch_page_via_intercept(page, page_num)
+                    cars = await _fetch_page_via_intercept(page, page_num, context=context)
                     if not cars:
                         consecutive_empty += 1
                         if consecutive_empty >= 5:
