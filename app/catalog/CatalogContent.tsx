@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
@@ -112,6 +112,8 @@ function normalizeModel(raw: string): string {
     .replace(/\s+[A-Z]{0,3}\d[A-Z0-9]{0,3}$/, "")
     // Strip descriptive body-style suffixes (BMW Gran Coupe, Active Tourer, etc.)
     .replace(/\s+(Gran Coupe|Gran Turismo|Gran Tourer|Sport Turismo|Active Tourer|Sports Wagon|Shooting Brake|Sport Wagon|Sportback|Avant|Estate|Touring|Cabriolet|Convertible|Targa|Roadster|Spider|Spyder|Allroad|Coupe)$/i, "")
+    // Korean body-style suffixes
+    .replace(/\s+(그란쿠페|액티브 투어러|슈팅브레이크|그란투리스모|스포츠 투어러)$/, "")
     // Korean: strip generation suffix "2세대", "3세대" etc.
     .replace(/\s+\d+세대$/, "")
     // Korean: strip body/variant suffixes
@@ -127,9 +129,13 @@ function normalizeModel(raw: string): string {
 }
 
 function bodyLabel(raw: string, base: string): string {
-  const m = raw.match(/\(([^)]+)\)$/);
-  if (m) return m[1];
-  return raw.replace(base, "").trim() || raw;
+  const chassisMatch = raw.match(/\(([^)]+)\)$/);
+  const withoutChassis = raw.replace(/\s*\([A-Z0-9][A-Z0-9]{1,4}\)$/, "").trim();
+  const suffix = withoutChassis.replace(base, "").trim();
+  if (suffix && chassisMatch) return `${suffix} (${chassisMatch[1]})`;
+  if (suffix) return suffix;
+  if (chassisMatch) return chassisMatch[1];
+  return raw;
 }
 
 function parseVolumeFromBadge(badge: string | null): number | null {
@@ -225,6 +231,7 @@ export default function CatalogContent({
 } = {}) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const pathname = usePathname();
 
   const [country, setCountry] = useState<"all" | "korea" | "china">(
     (searchParams.get("country") ?? defaultCountry ?? "all") as "all" | "korea" | "china"
@@ -282,6 +289,9 @@ export default function CatalogContent({
   const [priceRubTo,   setPriceRubTo]   = useState<number | "">(_readPriceParam("prt"));
   const [selectedBodies, setSelectedBodies] = useState<string[]>(
     searchParams.getAll("body")
+  );
+  const [driveTypes, setDriveTypes] = useState<string[]>(
+    searchParams.getAll("drive")
   );
   const [modalOpen, setModalOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -342,6 +352,9 @@ export default function CatalogContent({
   const [pendingBodies, setPendingBodies] = useState<string[]>(
     searchParams.getAll("body")
   );
+  const [pendingDriveTypes, setPendingDriveTypes] = useState<string[]>(
+    searchParams.getAll("drive")
+  );
 
   // Bodies available for the pending model selection
   const availableBodies = useMemo(() => {
@@ -386,10 +399,11 @@ export default function CatalogContent({
     if (priceRubFrom !== "") p.set("prf", String(priceRubFrom));
     if (priceRubTo !== "") p.set("prt", String(priceRubTo));
     for (const b of selectedBodies) p.append("body", b);
+    for (const d of driveTypes) p.append("drive", d);
     const qs = p.toString();
-    router.replace(qs ? `/catalog?${qs}` : "/catalog", { scroll: false });
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [country, activeCategory, selectedBrands, selectedModels, yearFrom, yearTo, priceSort, ecoFee, fuelCategories, volumeFrom, volumeTo, mileageFrom, mileageTo, hpFrom, hpTo, priceRubFrom, priceRubTo, selectedBodies]);
+  }, [country, activeCategory, selectedBrands, selectedModels, yearFrom, yearTo, priceSort, ecoFee, fuelCategories, volumeFrom, volumeTo, mileageFrom, mileageTo, hpFrom, hpTo, priceRubFrom, priceRubTo, selectedBodies, driveTypes]);
 
   const buildParams = (off: number) => {
     const p = new URLSearchParams();
@@ -416,6 +430,7 @@ export default function CatalogContent({
     if (hpTo !== "") p.set("hp_to", String(hpTo));
     if (priceRubFrom !== "") p.set("total_rub_from", String(priceRubFrom));
     if (priceRubTo !== "") p.set("total_rub_to", String(priceRubTo));
+    for (const dt of driveTypes) p.append("drive_type", dt);
     const seg = CATEGORY_SEGMENT[activeCategory];
     if (seg) p.set("segment", seg);
     return p.toString();
@@ -441,7 +456,7 @@ export default function CatalogContent({
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [country, activeCategory, selectedBrands, selectedModels, selectedBodies, ecoFee, fuelCategories, yearFrom, yearTo, priceSort, volumeFrom, volumeTo, mileageFrom, mileageTo, hpFrom, hpTo, priceRubFrom, priceRubTo]);
+  }, [country, activeCategory, selectedBrands, selectedModels, selectedBodies, ecoFee, fuelCategories, yearFrom, yearTo, priceSort, volumeFrom, volumeTo, mileageFrom, mileageTo, hpFrom, hpTo, priceRubFrom, priceRubTo, driveTypes]);
 
   // Sync applied → pending when filter panel opens
   useEffect(() => {
@@ -463,6 +478,7 @@ export default function CatalogContent({
       setPendingPriceRubFrom(priceRubFrom);
       setPendingPriceRubTo(priceRubTo);
       setPendingBodies(selectedBodies);
+      setPendingDriveTypes(driveTypes);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersOpen]);
@@ -546,9 +562,9 @@ export default function CatalogContent({
     return years;
   }, [yearMin, yearMax]);
 
-  const hasActiveFilters = activeCategory !== "all" || selectedBrands.length > 0 || selectedModels.length > 0 || selectedBodies.length > 0 || ecoFee || fuelCategories.length > 0 || yearFrom !== "" || yearTo !== "" || priceSort !== "" || volumeFrom !== "" || volumeTo !== "" || mileageFrom !== "" || mileageTo !== "" || hpFrom !== "" || hpTo !== "" || priceRubFrom !== "" || priceRubTo !== "";
+  const hasActiveFilters = activeCategory !== "all" || selectedBrands.length > 0 || selectedModels.length > 0 || selectedBodies.length > 0 || ecoFee || fuelCategories.length > 0 || yearFrom !== "" || yearTo !== "" || priceSort !== "" || volumeFrom !== "" || volumeTo !== "" || mileageFrom !== "" || mileageTo !== "" || hpFrom !== "" || hpTo !== "" || priceRubFrom !== "" || priceRubTo !== "" || driveTypes.length > 0;
 
-  const hasPendingFilters = pendingCategory !== "all" || pendingBrands.length > 0 || pendingModels.length > 0 || pendingBodies.length > 0 || pendingEcoFee || pendingFuelCategories.length > 0 || pendingYearFrom !== "" || pendingYearTo !== "" || pendingPriceSort !== "" || pendingVolumeFrom !== "" || pendingVolumeTo !== "" || pendingMileageFrom !== "" || pendingMileageTo !== "" || pendingHpFrom !== "" || pendingHpTo !== "" || pendingPriceRubFrom !== "" || pendingPriceRubTo !== "";
+  const hasPendingFilters = pendingCategory !== "all" || pendingBrands.length > 0 || pendingModels.length > 0 || pendingBodies.length > 0 || pendingEcoFee || pendingFuelCategories.length > 0 || pendingYearFrom !== "" || pendingYearTo !== "" || pendingPriceSort !== "" || pendingVolumeFrom !== "" || pendingVolumeTo !== "" || pendingMileageFrom !== "" || pendingMileageTo !== "" || pendingHpFrom !== "" || pendingHpTo !== "" || pendingPriceRubFrom !== "" || pendingPriceRubTo !== "" || pendingDriveTypes.length > 0;
 
   const applyFilters = () => {
     setActiveCategory(pendingCategory);
@@ -568,13 +584,14 @@ export default function CatalogContent({
     setPriceRubFrom(pendingPriceRubFrom);
     setPriceRubTo(pendingPriceRubTo);
     setSelectedBodies(pendingBodies);
+    setDriveTypes(pendingDriveTypes);
     setFiltersOpen(false);
   };
 
   const resetFilters = () => {
     setCountry("all");
-    setActiveCategory("all"); setSelectedBrands([]); setSelectedModels([]); setSelectedBodies([]); setEcoFee(false); setFuelCategories([]); setYearFrom(""); setYearTo(""); setPriceSort(""); setVolumeFrom(""); setVolumeTo(""); setMileageFrom(""); setMileageTo(""); setHpFrom(""); setHpTo(""); setPriceRubFrom(""); setPriceRubTo("");
-    setPendingCategory("all"); setPendingBrands([]); setPendingModels([]); setPendingBodies([]); setPendingEcoFee(false); setPendingFuelCategories([]); setPendingYearFrom(""); setPendingYearTo(""); setPendingPriceSort(""); setPendingVolumeFrom(""); setPendingVolumeTo(""); setPendingMileageFrom(""); setPendingMileageTo(""); setPendingHpFrom(""); setPendingHpTo(""); setPendingPriceRubFrom(""); setPendingPriceRubTo("");
+    setActiveCategory("all"); setSelectedBrands([]); setSelectedModels([]); setSelectedBodies([]); setEcoFee(false); setFuelCategories([]); setYearFrom(""); setYearTo(""); setPriceSort(""); setVolumeFrom(""); setVolumeTo(""); setMileageFrom(""); setMileageTo(""); setHpFrom(""); setHpTo(""); setPriceRubFrom(""); setPriceRubTo(""); setDriveTypes([]);
+    setPendingCategory("all"); setPendingBrands([]); setPendingModels([]); setPendingBodies([]); setPendingEcoFee(false); setPendingFuelCategories([]); setPendingYearFrom(""); setPendingYearTo(""); setPendingPriceSort(""); setPendingVolumeFrom(""); setPendingVolumeTo(""); setPendingMileageFrom(""); setPendingMileageTo(""); setPendingHpFrom(""); setPendingHpTo(""); setPendingPriceRubFrom(""); setPendingPriceRubTo(""); setPendingDriveTypes([]);
   };
 
   const categories: Category[] = ["all", "ekonom", "komfort", "biznes", "premium"];
@@ -617,9 +634,11 @@ export default function CatalogContent({
       <section className={`${embedded ? "relative" : "sticky top-0 z-30"} bg-white shadow-sm border-b border-[#DDE5F2]`}>
         <div className="max-w-[1400px] mx-auto px-4">
           <div className="flex items-center gap-2 py-2.5">
-            <a href="/" className="shrink-0 mr-1 hidden md:block">
-              <img src="/logo.svg" alt="IM-AUTO" className="h-7 w-auto" />
-            </a>
+            {!embedded && (
+              <a href="/" className="shrink-0 mr-1 hidden md:block">
+                <img src="/logo.svg" alt="IM-AUTO" className="h-7 w-auto" />
+              </a>
+            )}
             {/* Country tabs */}
             <div className="flex items-center gap-1">
               {(["all", "korea", "china"] as const).map((c) => {
@@ -722,6 +741,11 @@ export default function CatalogContent({
                   </div>
                 </div>
 
+                <div>
+                  <div className="text-xs text-[#6B7A96] uppercase tracking-wider mb-2">Привод</div>
+                  <DriveTypeFilter values={pendingDriveTypes} onChange={setPendingDriveTypes} fullWidth />
+                </div>
+
                 {availableYears.length > 0 && (
                   <div>
                     <div className="text-xs text-[#6B7A96] uppercase tracking-wider mb-2">Год выпуска</div>
@@ -822,6 +846,11 @@ export default function CatalogContent({
             <div>
               <div className="text-[10px] text-[#A0AAB8] uppercase tracking-widest mb-2">Топливо</div>
               <FuelCategoryFilter values={fuelCategories} onChange={setFuelCategories} fullWidth />
+            </div>
+
+            <div>
+              <div className="text-[10px] text-[#A0AAB8] uppercase tracking-widest mb-2">Привод</div>
+              <DriveTypeFilter values={driveTypes} onChange={(v) => { setDriveTypes(v); setPendingDriveTypes(v); }} fullWidth />
             </div>
 
             <div>
@@ -1999,11 +2028,11 @@ function MileageRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
       <div className="grid grid-cols-2 gap-3">
         <input type="text" inputMode="numeric" placeholder="Мин км"
           value={fromRaw} className={baseCls(fromErr, from !== "", true)}
-          onChange={e => { setFromRaw(e.target.value.replace(/\D/g, "")); setFromErr(false); }}
+          onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
           onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
         <input type="text" inputMode="numeric" placeholder="Макс км"
           value={toRaw} className={baseCls(toErr, to !== "", true)}
-          onChange={e => { setToRaw(e.target.value.replace(/\D/g, "")); setToErr(false); }}
+          onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
           onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
       </div>
     );
@@ -2013,12 +2042,12 @@ function MileageRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
     <div className="flex items-center gap-1.5 shrink-0">
       <input type="text" inputMode="numeric" placeholder="От км"
         value={fromRaw} className={baseCls(fromErr, from !== "", false)}
-        onChange={e => { setFromRaw(e.target.value.replace(/\D/g, "")); setFromErr(false); }}
+        onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
         onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
       <span className="text-[#CBD5E1] text-xs">—</span>
       <input type="text" inputMode="numeric" placeholder="До км"
         value={toRaw} className={baseCls(toErr, to !== "", false)}
-        onChange={e => { setToRaw(e.target.value.replace(/\D/g, "")); setToErr(false); }}
+        onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
         onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
     </div>
   );
@@ -2043,7 +2072,7 @@ function HpRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
 
   const parse = (raw: string): number | null => {
     if (raw === "") return 0;
-    const n = parseInt(raw, 10);
+    const n = parseInt(raw.replace(/\D/g, ""), 10);
     if (isNaN(n) || n < 1 || n > 2000) return null;
     return n;
   };
@@ -2077,11 +2106,11 @@ function HpRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
       <div className="grid grid-cols-2 gap-3">
         <input type="text" inputMode="numeric" placeholder="От л.с."
           value={fromRaw} className={baseCls(fromErr, from !== "", true)}
-          onChange={e => { setFromRaw(e.target.value.replace(/\D/g, "")); setFromErr(false); }}
+          onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
           onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
         <input type="text" inputMode="numeric" placeholder="До л.с."
           value={toRaw} className={baseCls(toErr, to !== "", true)}
-          onChange={e => { setToRaw(e.target.value.replace(/\D/g, "")); setToErr(false); }}
+          onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
           onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
       </div>
     );
@@ -2091,12 +2120,12 @@ function HpRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
     <div className="flex items-center gap-1.5 shrink-0">
       <input type="text" inputMode="numeric" placeholder="От л.с."
         value={fromRaw} className={baseCls(fromErr, from !== "", false)}
-        onChange={e => { setFromRaw(e.target.value.replace(/\D/g, "")); setFromErr(false); }}
+        onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
         onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
       <span className="text-[#CBD5E1] text-xs">—</span>
       <input type="text" inputMode="numeric" placeholder="До л.с."
         value={toRaw} className={baseCls(toErr, to !== "", false)}
-        onChange={e => { setToRaw(e.target.value.replace(/\D/g, "")); setToErr(false); }}
+        onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
         onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
     </div>
   );
@@ -2107,6 +2136,38 @@ function HpRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
 
 function formatRub(n: number): string {
   return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function formatDigits(digits: string): string {
+  return digits === "" ? "" : digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function handlePriceInput(
+  e: React.ChangeEvent<HTMLInputElement>,
+  setter: (v: string) => void,
+) {
+  const el = e.target;
+  const cursorPos = el.selectionStart ?? 0;
+  const oldVal = el.value;
+  const digitsBeforeCursor = oldVal.slice(0, cursorPos).replace(/\D/g, "").length;
+
+  const digits = e.target.value.replace(/\D/g, "");
+  const formatted = formatDigits(digits);
+  setter(formatted);
+
+  requestAnimationFrame(() => {
+    if (document.activeElement !== el) return;
+    let digitCount = 0;
+    let newCursor = formatted.length;
+    for (let i = 0; i < formatted.length; i++) {
+      if (/\d/.test(formatted[i])) {
+        digitCount++;
+        if (digitCount === digitsBeforeCursor) { newCursor = i + 1; break; }
+      }
+    }
+    if (digitsBeforeCursor === 0) newCursor = 0;
+    el.setSelectionRange(newCursor, newCursor);
+  });
 }
 
 function parseRub(raw: string): number | null {
@@ -2166,11 +2227,11 @@ function PriceRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
       <div className="grid grid-cols-2 gap-3">
         <input type="text" inputMode="numeric" placeholder="От ₽"
           value={fromRaw} className={baseCls(fromErr, from !== "", true)}
-          onChange={e => { setFromRaw(e.target.value.replace(/[^\d\s]/g, "")); setFromErr(false); }}
+          onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
           onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
         <input type="text" inputMode="numeric" placeholder="До ₽"
           value={toRaw} className={baseCls(toErr, to !== "", true)}
-          onChange={e => { setToRaw(e.target.value.replace(/[^\d\s]/g, "")); setToErr(false); }}
+          onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
           onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
       </div>
     );
@@ -2180,12 +2241,12 @@ function PriceRangeFilter({ from, to, onFromChange, onToChange, fullWidth }: {
     <div className="flex items-center gap-1.5 shrink-0">
       <input type="text" inputMode="numeric" placeholder="От ₽"
         value={fromRaw} className={baseCls(fromErr, from !== "", false)}
-        onChange={e => { setFromRaw(e.target.value.replace(/[^\d\s]/g, "")); setFromErr(false); }}
+        onChange={e => { handlePriceInput(e, setFromRaw); setFromErr(false); }}
         onBlur={commitFrom} onKeyDown={e => e.key === "Enter" && commitFrom()} />
       <span className="text-[#CBD5E1] text-xs">—</span>
       <input type="text" inputMode="numeric" placeholder="До ₽"
         value={toRaw} className={baseCls(toErr, to !== "", false)}
-        onChange={e => { setToRaw(e.target.value.replace(/[^\d\s]/g, "")); setToErr(false); }}
+        onChange={e => { handlePriceInput(e, setToRaw); setToErr(false); }}
         onBlur={commitTo} onKeyDown={e => e.key === "Enter" && commitTo()} />
       <span className="text-[#94A3B8] text-[10px] shrink-0">₽</span>
     </div>
@@ -2476,3 +2537,165 @@ function ModelMultiSelect({ models, values, onChange, fullWidth = false }: {
   );
 }
 
+
+/* ── DriveTypeFilter ─────────────────────────────────────────── */
+
+const DRIVE_OPTIONS = [
+  { value: "awd", label: "Полный (AWD/4WD)" },
+  { value: "rwd", label: "Задний (RWD)"      },
+  { value: "fwd", label: "Передний (FWD)"    },
+];
+
+function DriveTypeFilter({ values, onChange, fullWidth = false }: {
+  values: string[];
+  onChange: (v: string[]) => void;
+  fullWidth?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [localValues, setLocalValues] = useState<string[]>(values);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (fullWidth) return;
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [fullWidth]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) setLocalValues(values); }, [open]);
+
+  const handleOpen = () => {
+    if (!fullWidth && !open && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDropdownPos({ top: rect.bottom + 6, left: rect.left });
+    }
+    setOpen(o => !o);
+  };
+
+  const toggle = (v: string) =>
+    setLocalValues(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]);
+
+  const hasValue = values.length > 0;
+  const hasLocal = localValues.length > 0;
+  const label = hasValue
+    ? values.length === 1
+      ? DRIVE_OPTIONS.find(o => o.value === values[0])?.label ?? "Привод"
+      : `${values.length} типа`
+    : "Тип привода";
+
+  const itemsList = (
+    <ul className="py-1">
+      {DRIVE_OPTIONS.map(opt => {
+        const checked = localValues.includes(opt.value);
+        return (
+          <li key={opt.value}>
+            <button
+              onMouseDown={e => { e.preventDefault(); toggle(opt.value); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm transition-colors text-left hover:bg-[#F8FAFC] rounded-lg"
+              style={{
+                color:      checked ? "#92400e" : "#374151",
+                background: checked ? "#fffbeb" : "transparent",
+                fontWeight: checked ? 600 : 400,
+              }}
+            >
+              <span
+                className="shrink-0 w-[35px] h-[35px] rounded-md border-2 flex items-center justify-center transition-colors"
+                style={{
+                  borderColor: checked ? "#C9A227" : "#CBD5E1",
+                  background:  checked ? "#C9A227" : "transparent",
+                }}
+              >
+                {checked && <span className="text-white text-[16px] font-bold leading-none">✓</span>}
+              </span>
+              {opt.label}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  const footer = (
+    <div className="px-3 pb-3 pt-2 border-t border-[#F1F5F9] flex items-center gap-2">
+      {hasLocal && <button onMouseDown={e => { e.preventDefault(); setLocalValues([]); }} className="text-xs text-[#A0AAB8] hover:text-[#6B7A96] transition-colors py-1 px-2 shrink-0">Сбросить</button>}
+      <button onMouseDown={e => { e.preventDefault(); onChange(localValues); setOpen(false); }} className="flex-1 bg-[#1B3260] hover:bg-[#0F1E3F] text-white text-sm font-semibold py-3 rounded-xl transition-colors">Применить</button>
+    </div>
+  );
+
+  if (fullWidth) {
+    return (
+      <div>
+        <button
+          onClick={handleOpen}
+          className="w-full flex items-center justify-between border rounded-xl px-4 py-3.5 text-sm font-semibold text-left transition-all duration-200"
+          style={{
+            borderColor: hasValue ? "#C9A227" : "#E2E8F0",
+            background:  hasValue ? "#fffbeb" : "#F5F7FC",
+            color:       hasValue ? "#92400e" : "#374151",
+          }}
+        >
+          <span className="flex-1 truncate">{label}</span>
+          {hasValue && (
+            <span onMouseDown={e => { e.stopPropagation(); onChange([]); }} className="shrink-0 text-[#C9A227] hover:text-[#92400e] cursor-pointer mr-2">
+              <X size={14} />
+            </span>
+          )}
+          <ChevronDown size={16} className="shrink-0 text-[#A0AAB8]" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+        </button>
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.15 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-1 bg-white rounded-xl border border-[#DDE5F2] overflow-hidden">
+                {itemsList}{footer}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative shrink-0">
+      <button
+        onClick={handleOpen}
+        className="flex items-center gap-2 border rounded-full transition-all duration-200 px-3 py-1.5 text-xs font-semibold min-w-[9rem] text-left"
+        style={{
+          borderColor: hasValue ? "#C9A227" : "#E2E8F0",
+          background:  hasValue ? "#fffbeb" : "#F5F7FC",
+          color:       hasValue ? "#92400e" : "#6B7A96",
+        }}
+      >
+        <span className="flex-1 truncate">{label}</span>
+        {hasValue
+          ? <span onMouseDown={e => { e.stopPropagation(); onChange([]); }} className="shrink-0 text-[#C9A227] hover:text-[#92400e]"><X size={12} /></span>
+          : <ChevronDown size={12} className="shrink-0 text-[#A0AAB8]" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+        }
+      </button>
+      <AnimatePresence>
+        {open && dropdownPos && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="fixed z-[200] bg-white rounded-xl border border-[#DDE5F2] shadow-lg min-w-[180px]"
+            style={{ top: dropdownPos.top, left: dropdownPos.left }}
+          >
+            {itemsList}{footer}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
