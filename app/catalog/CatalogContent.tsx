@@ -378,8 +378,10 @@ export default function CatalogContent({
   const [yearMin, setYearMin] = useState(2000);
   const [yearMax, setYearMax] = useState(new Date().getFullYear());
 
-  // Sync filters → URL so they survive navigation back from car detail
+  // Sync filters → URL so they survive navigation back from car detail.
+  // Skip when embedded (page already encodes context via its own path).
   useEffect(() => {
+    if (embedded) return;
     const p = new URLSearchParams();
     if (country !== "all") p.set("country", country);
     if (activeCategory !== "all") p.set("cat", activeCategory);
